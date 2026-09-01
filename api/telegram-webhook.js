@@ -1,7 +1,8 @@
-// Vercel serverless function — Telegram bot with THREE capabilities:
+// Vercel serverless function — Telegram bot with FOUR capabilities:
 //   1. LOG    — "spent 500 on food" → creates a new entry
 //   2. QUERY  — "kal kitna kharcha hua?" → answers using your real data
 //   3. UNDO   — "undo" / "last entry delete karo" → removes the most recent entry
+//   4. TIP    — "/tip", "koi advice do", "kya karu aaj" → ruthless tactical money move
 //
 // One AI call per message decides which mode applies, then acts accordingly.
 
@@ -30,7 +31,7 @@ async function saveState(data) {
   });
 }
 
-async function callClaude(prompt) {
+async function callClaude(prompt, maxTokens = 500) {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -38,10 +39,16 @@ async function callClaude(prompt) {
       "x-api-key": process.env.ANTHROPIC_API_KEY,
       "anthropic-version": "2023-06-01",
     },
-    body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 500, messages: [{ role: "user", content: prompt }] }),
+    body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: maxTokens, messages: [{ role: "user", content: prompt }] }),
   });
   const json = await res.json();
   return (json.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n").trim();
+}
+
+function topBreakdown(entries, keyFn) {
+  const map = {};
+  entries.forEach((e) => { const k = keyFn(e); map[k] = (map[k] || 0) + e.amount; });
+  return Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k, v]) => `${k}: ₹${Math.round(v)}`).join(", ");
 }
 
 function buildQueryContext(data) {
@@ -75,6 +82,8 @@ function buildQueryContext(data) {
     `This month so far: spent ₹${monthExp}, earned ₹${monthInc}.`,
     `Net worth right now: ₹${Math.round(netWorth)}.`,
     `Receivable: ₹${totalReceivable}. Payable: ₹${totalPayable}.`,
+    `Top income sources: ${topBreakdown(data.income, (e) => e.source) || "none yet"}.`,
+    `Top expense categories: ${topBreakdown(data.expenses, (e) => e.category) || "none yet"}.`,
     `Recent expense entries (last 20): ${recentExpenses || "none"}.`,
     `Recent income entries (last 20): ${recentIncome || "none"}.`,
   ].join("\n");
@@ -102,7 +111,6 @@ async function sendTelegramReply(chatId, text) {
 async function undoLastEntry(data) {
   const lastIncome = data.income[data.income.length - 1];
   const lastExpense = data.expenses[data.expenses.length - 1];
-  // pick whichever was added most recently by id (both use Date.now() as id)
   const lastIsIncome = lastIncome && (!lastExpense || lastIncome.id > lastExpense.id);
 
   if (!lastIncome && !lastExpense) return { removed: null, data };
@@ -117,6 +125,13 @@ async function undoLastEntry(data) {
   }
 }
 
+async function giveTip(data, chatId) {
+  const context = buildQueryContext(data);
+  const prompt = `Act as a ruthless hustle coach for a solo D2C sourcing founder (imports luxury goods from US/UK/Canada, resells in India). ${context}\nGive me ONE specific, tactical "money move" for right now — either a way to make money (what to sell, to whom, via which channel, using my actual top sources/categories above) or a way to save money (a concrete cut based on my actual waste/spend patterns above). Reference real numbers/categories from my data. Ruthless and blunt, swearing allowed and encouraged (fuck, shit etc). 2-3 punchy sentences MAX, no preamble.`;
+  const tip = await callClaude(prompt, 300);
+  await sendTelegramReply(chatId, `💡 ${tip}`);
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(200).send("Telegram webhook is live.");
@@ -129,11 +144,11 @@ export default async function handler(req, res) {
     if (!chatId) return res.status(200).json({ ok: true });
 
     if (text === "/start") {
-      await sendTelegramReply(chatId, "Khata bot ready. Text me:\n• 'spent 500 on food' — logs an entry\n• 'kal kitna kharcha hua?' — answers from your data\n• 'undo' — removes the last entry");
+      await sendTelegramReply(chatId, "Khata bot ready. Text me:\n• 'spent 500 on food' — logs an entry\n• 'kal kitna kharcha hua?' — answers from your data\n• 'undo' — removes the last entry\n• '/tip' or 'koi advice do' — a ruthless money move for right now");
       return res.status(200).json({ ok: true });
     }
     if (!text) {
-      await sendTelegramReply(chatId, "Send me something like 'spent 500 on food', ask me a question about your money, or say 'undo'.");
+      await sendTelegramReply(chatId, "Send me something like 'spent 500 on food', ask me a question, say 'undo', or ask for a tip.");
       return res.status(200).json({ ok: true });
     }
 
@@ -151,8 +166,14 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
+    // fast-path tip command
+    if (/^\/tip$/i.test(text)) {
+      await giveTip(data, chatId);
+      return res.status(200).json({ ok: true });
+    }
+
     const context = buildQueryContext(data);
-    const prompt = `You are a financial assistant for a Khata (money tracking) app. Here is the user's real recent data:\n${context}\n\nUser's message: "${text}"\n\nDecide what this message wants, and respond with EXACTLY ONE of these two formats — nothing else, no preamble:\n\n1. If it's asking to LOG a new income/expense/waste entry, respond with:\nLOG:{"type":"income"|"expense"|"waste","amount":number,"label":"category or source name","note":"short note or empty string"}\n\n2. If it's a QUESTION about their spending/income/data (in any language — Hindi, Hinglish, English), respond with:\nANSWER:<short direct answer using the real numbers above, same language style as their question, no more than 2-3 sentences>\n\nIf you can't find enough data to answer, say so honestly in the ANSWER format.`;
+    const prompt = `You are a financial assistant for a Khata (money tracking) app. Here is the user's real recent data:\n${context}\n\nUser's message: "${text}"\n\nDecide what this message wants, and respond with EXACTLY ONE of these three formats — nothing else, no preamble:\n\n1. If it's asking to LOG a new income/expense/waste entry, respond with:\nLOG:{"type":"income"|"expense"|"waste","amount":number,"label":"category or source name","note":"short note or empty string"}\n\n2. If it's a QUESTION about their spending/income/data (in any language — Hindi, Hinglish, English), respond with:\nANSWER:<short direct answer using the real numbers above, same language style as their question, no more than 2-3 sentences>\n\n3. If they're asking for advice, a tip, a recommendation, or "what should I do" (e.g. "koi advice do", "kya karu", "suggest something"), respond with:\nTIP\n(just the word TIP, nothing else — a separate call will generate the actual tip)\n\nIf you can't find enough data to answer a question, say so honestly in the ANSWER format.`;
 
     const raw = await callClaude(prompt);
 
@@ -189,6 +210,8 @@ export default async function handler(req, res) {
       await sendTelegramReply(chatId, reply);
     } else if (raw.startsWith("ANSWER:")) {
       await sendTelegramReply(chatId, raw.slice(7).trim());
+    } else if (raw.trim() === "TIP") {
+      await giveTip(data, chatId);
     } else {
       await sendTelegramReply(chatId, raw || "Didn't quite get that — try again.");
     }
