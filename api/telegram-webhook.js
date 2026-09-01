@@ -100,6 +100,14 @@ function applyFundDelta(data, amount, sign) {
   return { fundDelta, fundBalances };
 }
 
+async function saveChatId(chatId) {
+  await fetch(`${SUPABASE_URL}/rest/v1/khata_telegram_chat`, {
+    method: "POST",
+    headers: { ...SUPABASE_HEADERS, Prefer: "resolution=merge-duplicates" },
+    body: JSON.stringify({ id: "default", chat_id: chatId, updated_at: new Date().toISOString() }),
+  });
+}
+
 async function sendTelegramReply(chatId, text) {
   await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
     method: "POST",
@@ -142,6 +150,7 @@ export default async function handler(req, res) {
     const text = (message?.text || "").trim();
     const chatId = message?.chat?.id;
     if (!chatId) return res.status(200).json({ ok: true });
+    saveChatId(chatId); // fire-and-forget, don't block the reply
 
     if (text === "/start") {
       await sendTelegramReply(chatId, "Khata bot ready. Text me:\n• 'spent 500 on food' — logs an entry\n• 'kal kitna kharcha hua?' — answers from your data\n• 'undo' — removes the last entry\n• '/tip' or 'koi advice do' — a ruthless money move for right now");
