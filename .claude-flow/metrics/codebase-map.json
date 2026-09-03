@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-09-03T06:47:44.592Z",
+  "projectRoot": "/home/user/money-app",
+  "structure": {
+    "hasPackageJson": true,
+    "hasTsConfig": false,
+    "hasClaudeConfig": true,
+    "hasClaudeFlow": true
+  },
+  "scannedAt": 1788418064592
+}
