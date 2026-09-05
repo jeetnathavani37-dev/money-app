@@ -25,6 +25,7 @@ Vercel project's environment variables for deployment:
 | `TELEGRAM_BOT_TOKEN` | `api/telegram-webhook.js`, `api/cron-summary.js` | Telegram Bot API access |
 | `CRON_SECRET` | `api/cron-summary.js` | Shared secret so only your scheduler can trigger the summary endpoint |
 | `AGENT_BRIDGE_SECRET` | `api/agent-message.js` | Shared secret so only your own external bot (e.g. a self-hosted WhatsApp bot) can call the money agent |
+| `WHATSAPP_CLOUD_TOKEN` / `WHATSAPP_PHONE_NUMBER_ID` / `WHATSAPP_VERIFY_TOKEN` | `api/whatsapp-cloud-webhook.js` | Meta WhatsApp Cloud API access + webhook verification |
 | `KITE_API_KEY` / `KITE_API_SECRET` | `api/kite-callback.js` | Kite Connect login token exchange |
 
 ## API routes
@@ -46,6 +47,11 @@ Vercel project's environment variables for deployment:
 - **`api/whatsapp-webhook.js`** — the same money agent over Twilio's WhatsApp
   Sandbox webhook, at full feature parity with Telegram. See the comment at
   the top of the file for the ~5 minute Twilio setup.
+- **`api/whatsapp-cloud-webhook.js`** — the same money agent over Meta's
+  official WhatsApp Cloud API — free, no ban risk, no persistent process to
+  host, unlike Twilio's sandbox or a self-hosted unofficial bot. This is the
+  recommended WhatsApp path. See the comment at the top of the file for the
+  ~10 minute Meta developer setup.
 - **`api/agent-message.js`** — a generic, `AGENT_BRIDGE_SECRET`-protected
   bridge into the money agent for a bot that can't run on Vercel (e.g. a
   Baileys-based WhatsApp bot, which needs a persistent process, as an
@@ -71,7 +77,8 @@ All routes persist to a shared Supabase project.
   the client never sees them.
 - `vercel.json` raises `maxDuration` to 60s for the AI-backed routes — a
   multi-step tool-calling reply from the money agent can take longer than
-  Vercel's short default timeout. Twilio's own webhook timeout (~15s) is a
-  separate, harder constraint: an unusually long multi-tool-call WhatsApp
-  reply can still time out on Twilio's side even though the function itself
-  keeps running — Telegram has no such constraint.
+  Vercel's short default timeout. Twilio's own webhook timeout (~15s) and
+  Meta's (~20s) are separate, harder constraints: an unusually long
+  multi-tool-call WhatsApp reply can still time out on their side even
+  though the function itself keeps running — Telegram has no such
+  constraint.
