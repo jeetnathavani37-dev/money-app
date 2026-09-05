@@ -24,6 +24,7 @@ Vercel project's environment variables for deployment:
 | `ANTHROPIC_API_KEY` | `api/ai-proxy.js`, `api/_lib/money-agent.js` (Telegram + WhatsApp) | Calls to the Claude API |
 | `TELEGRAM_BOT_TOKEN` | `api/telegram-webhook.js`, `api/cron-summary.js` | Telegram Bot API access |
 | `CRON_SECRET` | `api/cron-summary.js` | Shared secret so only your scheduler can trigger the summary endpoint |
+| `AGENT_BRIDGE_SECRET` | `api/agent-message.js` | Shared secret so only your own external bot (e.g. a self-hosted WhatsApp bot) can call the money agent |
 | `KITE_API_KEY` / `KITE_API_SECRET` | `api/kite-callback.js` | Kite Connect login token exchange |
 
 ## API routes
@@ -45,6 +46,11 @@ Vercel project's environment variables for deployment:
 - **`api/whatsapp-webhook.js`** — the same money agent over Twilio's WhatsApp
   Sandbox webhook, at full feature parity with Telegram. See the comment at
   the top of the file for the ~5 minute Twilio setup.
+- **`api/agent-message.js`** — a generic, `AGENT_BRIDGE_SECRET`-protected
+  bridge into the money agent for a bot that can't run on Vercel (e.g. a
+  Baileys-based WhatsApp bot, which needs a persistent process, as an
+  alternative to the Twilio route above). POST `{ userMessage, chatKey }`
+  with `Authorization: Bearer <AGENT_BRIDGE_SECRET>`, get back `{ replyText }`.
 - **`api/sms-webhook.js`** — receives forwarded bank SMS (from an SMS-forwarding
   app on your phone) and stages a best-effort parsed transaction for review.
 - **`api/cron-summary.js`** — sends a periodic spending summary to your
