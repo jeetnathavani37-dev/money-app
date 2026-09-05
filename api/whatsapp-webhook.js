@@ -26,17 +26,47 @@ function todayISO() {
 }
 
 async function loadState() {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/khata_state?id=eq.default&select=data`, { headers: SUPABASE_HEADERS });
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/khata_state?id=eq.default&select=data,updated_at`, { headers: SUPABASE_HEADERS });
   const rows = await res.json();
-  return rows[0]?.data;
+  return rows[0] ? { data: rows[0].data, updatedAt: rows[0].updated_at } : { data: null, updatedAt: null };
 }
 
-async function saveState(data) {
-  await fetch(`${SUPABASE_URL}/rest/v1/khata_state`, {
-    method: "POST",
-    headers: { ...SUPABASE_HEADERS, Prefer: "resolution=merge-duplicates" },
-    body: JSON.stringify({ id: "default", data, updated_at: new Date().toISOString() }),
-  });
+// Only saves if no one else (the web app, the Telegram bot) has written since expectedUpdatedAt was
+// read. Returns { ok, updatedAt } — ok:false means a conflicting write happened.
+async function saveState(data, expectedUpdatedAt) {
+  const updatedAt = new Date().toISOString();
+  if (!expectedUpdatedAt) {
+    await fetch(`${SUPABASE_URL}/rest/v1/khata_state`, {
+      method: "POST",
+      headers: { ...SUPABASE_HEADERS, Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify({ id: "default", data, updated_at: updatedAt }),
+    });
+    return { ok: true, updatedAt };
+  }
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/khata_state?id=eq.default&updated_at=eq.${encodeURIComponent(expectedUpdatedAt)}`,
+    {
+      method: "PATCH",
+      headers: { ...SUPABASE_HEADERS, Prefer: "return=representation" },
+      body: JSON.stringify({ data, updated_at: updatedAt }),
+    }
+  );
+  const rows = await res.json().catch(() => []);
+  if (!Array.isArray(rows) || rows.length === 0) return { ok: false };
+  return { ok: true, updatedAt };
+}
+
+// Retries `mutate` against fresh state whenever another writer saves in between — so a
+// message logged here never silently clobbers one logged via Telegram or the web app.
+async function saveWithRetry(state, mutate, maxAttempts = 3) {
+  let current = state;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const outcome = mutate(current.data);
+    const saved = await saveState(outcome.data, current.updatedAt);
+    if (saved.ok) return { applied: true, meta: outcome.meta };
+    current = await loadState();
+  }
+  return { applied: false };
 }
 
 async function parseWithClaude(text) {
@@ -93,26 +123,24 @@ export default async function handler(req, res) {
       return res.status(200).send(twiml("Couldn't find an amount in that — try something like 'spent 500 on food'."));
     }
 
-    const data = await loadState();
+    const state = await loadState();
     const today = todayISO();
 
-    let reply;
-    if (parsed.type === "income") {
-      const { fundDelta, fundBalances } = applyFundDelta(data, amt, 1);
-      data.income.push({ id: Date.now(), amount: amt, source: parsed.label || "WhatsApp Log", note: parsed.note || text, date: today, fundDelta });
-      data.fundBalances = fundBalances;
-      reply = `✅ Logged ₹${amt} income — ${parsed.label || "uncategorized"}`;
-    } else {
+    const result = await saveWithRetry(state, (d) => {
+      if (parsed.type === "income") {
+        const { fundDelta, fundBalances } = applyFundDelta(d, amt, 1);
+        const next = { ...d, income: [...d.income, { id: Date.now(), amount: amt, source: parsed.label || "WhatsApp Log", note: parsed.note || text, date: today, fundDelta }], fundBalances };
+        return { data: next, meta: `✅ Logged ₹${amt} income — ${parsed.label || "uncategorized"}` };
+      }
       const isWaste = parsed.type === "waste";
       const fine = isWaste ? (amt < 100 ? 200 : 1000) : 0;
       const total = amt + fine;
-      const { fundDelta, fundBalances } = applyFundDelta(data, total, -1);
-      data.expenses.push({ id: Date.now(), amount: total, category: parsed.label || "Other", note: parsed.note || text, date: today, unnecessary: isWaste, fine, fundDelta });
-      data.fundBalances = fundBalances;
-      reply = `✅ Logged ₹${total} ${isWaste ? "waste (+fine)" : "expense"} — ${parsed.label || "uncategorized"}`;
-    }
+      const { fundDelta, fundBalances } = applyFundDelta(d, total, -1);
+      const next = { ...d, expenses: [...d.expenses, { id: Date.now(), amount: total, category: parsed.label || "Other", note: parsed.note || text, date: today, unnecessary: isWaste, fine, fundDelta }], fundBalances };
+      return { data: next, meta: `✅ Logged ₹${total} ${isWaste ? "waste (+fine)" : "expense"} — ${parsed.label || "uncategorized"}` };
+    });
 
-    await saveState(data);
+    const reply = result.applied ? result.meta : "Couldn't save that — data kept changing elsewhere, try again in a second.";
     return res.status(200).send(twiml(reply));
   } catch (err) {
     return res.status(200).send(twiml(`Something went wrong: ${err.message}`));

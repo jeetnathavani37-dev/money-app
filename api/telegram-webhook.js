@@ -18,17 +18,49 @@ function isoDaysAgo(n) {
 }
 
 async function loadState() {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/khata_state?id=eq.default&select=data`, { headers: SUPABASE_HEADERS });
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/khata_state?id=eq.default&select=data,updated_at`, { headers: SUPABASE_HEADERS });
   const rows = await res.json();
-  return rows[0]?.data;
+  return rows[0] ? { data: rows[0].data, updatedAt: rows[0].updated_at } : { data: null, updatedAt: null };
 }
 
-async function saveState(data) {
-  await fetch(`${SUPABASE_URL}/rest/v1/khata_state`, {
-    method: "POST",
-    headers: { ...SUPABASE_HEADERS, Prefer: "resolution=merge-duplicates" },
-    body: JSON.stringify({ id: "default", data, updated_at: new Date().toISOString() }),
-  });
+// Only saves if no one else (the web app, the WhatsApp bot) has written since expectedUpdatedAt was
+// read. Returns { ok, updatedAt } — ok:false means a conflicting write happened; the caller should
+// reload fresh state and retry rather than blindly overwriting it.
+async function saveState(data, expectedUpdatedAt) {
+  const updatedAt = new Date().toISOString();
+  if (!expectedUpdatedAt) {
+    await fetch(`${SUPABASE_URL}/rest/v1/khata_state`, {
+      method: "POST",
+      headers: { ...SUPABASE_HEADERS, Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify({ id: "default", data, updated_at: updatedAt }),
+    });
+    return { ok: true, updatedAt };
+  }
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/khata_state?id=eq.default&updated_at=eq.${encodeURIComponent(expectedUpdatedAt)}`,
+    {
+      method: "PATCH",
+      headers: { ...SUPABASE_HEADERS, Prefer: "return=representation" },
+      body: JSON.stringify({ data, updated_at: updatedAt }),
+    }
+  );
+  const rows = await res.json().catch(() => []);
+  if (!Array.isArray(rows) || rows.length === 0) return { ok: false };
+  return { ok: true, updatedAt };
+}
+
+// Retries `mutate` against fresh state whenever another writer saves in between — so
+// concurrent messages from Telegram/WhatsApp/the web app never silently clobber each other.
+async function saveWithRetry(state, mutate, maxAttempts = 3) {
+  let current = state;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const outcome = mutate(current.data);
+    if (!outcome) return { applied: false };
+    const saved = await saveState(outcome.data, current.updatedAt);
+    if (saved.ok) return { applied: true, data: outcome.data, meta: outcome.meta, updatedAt: saved.updatedAt };
+    current = await loadState();
+  }
+  return { applied: false, conflict: true };
 }
 
 async function callClaude(prompt, maxTokens = 500) {
@@ -116,20 +148,22 @@ async function sendTelegramReply(chatId, text) {
   });
 }
 
-async function undoLastEntry(data) {
+// Pure — computes the post-undo state from whatever data is passed in, so saveWithRetry
+// can recompute it against fresh state if another writer saves in between.
+function computeUndo(data) {
   const lastIncome = data.income[data.income.length - 1];
   const lastExpense = data.expenses[data.expenses.length - 1];
   const lastIsIncome = lastIncome && (!lastExpense || lastIncome.id > lastExpense.id);
 
-  if (!lastIncome && !lastExpense) return { removed: null, data };
+  if (!lastIncome && !lastExpense) return null;
 
   const fundBalances = { ...data.fundBalances };
   if (lastIsIncome) {
     Object.entries(lastIncome.fundDelta || {}).forEach(([fid, amt]) => { fundBalances[fid] = (fundBalances[fid] || 0) - amt; });
-    return { removed: `income of ₹${lastIncome.amount} (${lastIncome.source})`, data: { ...data, income: data.income.slice(0, -1), fundBalances } };
+    return { data: { ...data, income: data.income.slice(0, -1), fundBalances }, meta: `income of ₹${lastIncome.amount} (${lastIncome.source})` };
   } else {
     Object.entries(lastExpense.fundDelta || {}).forEach(([fid, amt]) => { fundBalances[fid] = (fundBalances[fid] || 0) - amt; });
-    return { removed: `expense of ₹${lastExpense.amount} (${lastExpense.category})`, data: { ...data, expenses: data.expenses.slice(0, -1), fundBalances } };
+    return { data: { ...data, expenses: data.expenses.slice(0, -1), fundBalances }, meta: `expense of ₹${lastExpense.amount} (${lastExpense.category})` };
   }
 }
 
@@ -161,16 +195,16 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
-    const data = await loadState();
+    const state = await loadState();
+    const data = state.data;
 
     // fast-path undo — no AI call needed
     if (/^(undo|delete last|remove last|last (entry )?(delete|hatao|hata do))/i.test(text)) {
-      const { removed, data: nextData } = await undoLastEntry(data);
-      if (!removed) {
-        await sendTelegramReply(chatId, "Nothing to undo — no entries logged yet.");
+      const result = await saveWithRetry(state, computeUndo);
+      if (!result.applied) {
+        await sendTelegramReply(chatId, result.conflict ? "Couldn't undo — data kept changing elsewhere, try again." : "Nothing to undo — no entries logged yet.");
       } else {
-        await saveState(nextData);
-        await sendTelegramReply(chatId, `✅ Removed: ${removed}`);
+        await sendTelegramReply(chatId, `✅ Removed: ${result.meta}`);
       }
       return res.status(200).json({ ok: true });
     }
@@ -200,23 +234,20 @@ export default async function handler(req, res) {
         return res.status(200).json({ ok: true });
       }
       const today = todayISO();
-      let reply;
-      if (parsed.type === "income") {
-        const { fundDelta, fundBalances } = applyFundDelta(data, amt, 1);
-        data.income.push({ id: Date.now(), amount: amt, source: parsed.label || "Telegram Log", note: parsed.note || text, date: today, fundDelta });
-        data.fundBalances = fundBalances;
-        reply = `✅ Logged ₹${amt} income — ${parsed.label || "uncategorized"}`;
-      } else {
+      const result = await saveWithRetry(state, (d) => {
+        if (parsed.type === "income") {
+          const { fundDelta, fundBalances } = applyFundDelta(d, amt, 1);
+          const next = { ...d, income: [...d.income, { id: Date.now(), amount: amt, source: parsed.label || "Telegram Log", note: parsed.note || text, date: today, fundDelta }], fundBalances };
+          return { data: next, meta: `✅ Logged ₹${amt} income — ${parsed.label || "uncategorized"}` };
+        }
         const isWaste = parsed.type === "waste";
         const fine = isWaste ? (amt < 100 ? 200 : 1000) : 0;
         const total = amt + fine;
-        const { fundDelta, fundBalances } = applyFundDelta(data, total, -1);
-        data.expenses.push({ id: Date.now(), amount: total, category: parsed.label || "Other", note: parsed.note || text, date: today, unnecessary: isWaste, fine, fundDelta });
-        data.fundBalances = fundBalances;
-        reply = `✅ Logged ₹${total} ${isWaste ? "waste (+fine)" : "expense"} — ${parsed.label || "uncategorized"}`;
-      }
-      await saveState(data);
-      await sendTelegramReply(chatId, reply);
+        const { fundDelta, fundBalances } = applyFundDelta(d, total, -1);
+        const next = { ...d, expenses: [...d.expenses, { id: Date.now(), amount: total, category: parsed.label || "Other", note: parsed.note || text, date: today, unnecessary: isWaste, fine, fundDelta }], fundBalances };
+        return { data: next, meta: `✅ Logged ₹${total} ${isWaste ? "waste (+fine)" : "expense"} — ${parsed.label || "uncategorized"}` };
+      });
+      await sendTelegramReply(chatId, result.applied ? result.meta : "Couldn't save that — data kept changing elsewhere, try again in a second.");
     } else if (raw.startsWith("ANSWER:")) {
       await sendTelegramReply(chatId, raw.slice(7).trim());
     } else if (raw.trim() === "TIP") {

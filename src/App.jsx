@@ -6,7 +6,7 @@ import {
   Plus, Trash2, X, Loader2, Settings2, Check, Target, Flame, Award,
   ArrowDownCircle, ArrowUpCircle, Home, Wallet, ListChecks, Pin, Landmark,
   Calculator, Delete, RefreshCw, Layers, Trophy, Swords, Lock, BarChart3,
-  FileDown, FileSpreadsheet, Printer, Mic, Zap,
+  FileDown, FileSpreadsheet, Printer, Mic, Zap, Pencil,
 } from "lucide-react";
 
 /* ---------------------------------------------------------------
@@ -37,20 +37,42 @@ const SUPABASE_URL = "https://qzripzgbstvxkfobzhyv.supabase.co";
 const SUPABASE_KEY = "sb_publishable_-EA-q_dacUuWovbrCW5XVw_pPZ2vK_O";
 const SUPABASE_HEADERS = { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" };
 
+// Returns { data, updatedAt } — updatedAt is null when the row doesn't exist yet (first-ever load).
 async function loadFromSupabase() {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/khata_state?id=eq.default&select=data`, { headers: SUPABASE_HEADERS });
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/khata_state?id=eq.default&select=data,updated_at`, { headers: SUPABASE_HEADERS });
   if (!res.ok) throw new Error(`load failed: ${res.status}`);
   const rows = await res.json();
-  return Array.isArray(rows) && rows[0] ? rows[0].data : null;
+  return Array.isArray(rows) && rows[0] ? { data: rows[0].data, updatedAt: rows[0].updated_at } : { data: null, updatedAt: null };
 }
 
-async function saveToSupabase(data) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/khata_state`, {
-    method: "POST",
-    headers: { ...SUPABASE_HEADERS, Prefer: "resolution=merge-duplicates" },
-    body: JSON.stringify({ id: "default", data, updated_at: new Date().toISOString() }),
-  });
+// Saves only if the row hasn't changed since expectedUpdatedAt was read — this is what stops the
+// web app, Telegram bot, and WhatsApp bot from silently clobbering each other's writes when two of
+// them save around the same time. Returns { ok: true, updatedAt } on success, or { ok: false } if
+// someone else wrote in between (the caller should reload and either retry or surface the conflict).
+async function saveToSupabase(data, expectedUpdatedAt) {
+  const updatedAt = new Date().toISOString();
+  if (!expectedUpdatedAt) {
+    // first-ever write for this install — nothing to conflict with yet
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/khata_state`, {
+      method: "POST",
+      headers: { ...SUPABASE_HEADERS, Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify({ id: "default", data, updated_at: updatedAt }),
+    });
+    if (!res.ok) throw new Error(`save failed: ${res.status}`);
+    return { ok: true, updatedAt };
+  }
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/khata_state?id=eq.default&updated_at=eq.${encodeURIComponent(expectedUpdatedAt)}`,
+    {
+      method: "PATCH",
+      headers: { ...SUPABASE_HEADERS, Prefer: "return=representation" },
+      body: JSON.stringify({ data, updated_at: updatedAt }),
+    }
+  );
   if (!res.ok) throw new Error(`save failed: ${res.status}`);
+  const rows = await res.json();
+  if (!Array.isArray(rows) || rows.length === 0) return { ok: false };
+  return { ok: true, updatedAt };
 }
 
 async function fetchPendingSms() {
@@ -126,6 +148,20 @@ function withAccountMovement(data, account, type, amount, note, date) {
   if (!acc) return data;
   const entry = { id: Date.now() + Math.floor(Math.random() * 1000), date, type, amount, note };
   return { ...data, accounts: { ...data.accounts, [account]: { ...acc, entries: [...acc.entries, entry] } } };
+}
+
+// recomputes a fund split for a (possibly edited) amount — sign is +1 for income, -1 for expense
+function fundDeltaForAmount(fundsList, amount, sign) {
+  const fundDelta = {};
+  fundsList.forEach((f) => { fundDelta[f.id] = Math.round((amount * f.pct) / 100) * sign; });
+  return fundDelta;
+}
+// reverses oldDelta out of fundBalances and applies newDelta in its place — used when editing an entry's amount
+function swapFundDelta(fundBalances, oldDelta, newDelta) {
+  const next = { ...fundBalances };
+  Object.entries(oldDelta || {}).forEach(([fid, amt]) => { next[fid] = (next[fid] || 0) - amt; });
+  Object.entries(newDelta || {}).forEach(([fid, amt]) => { next[fid] = (next[fid] || 0) + amt; });
+  return next;
 }
 function nextTravelGoal(data) {
   const travelGoals = data.goals.filter((g) => g.fundId === "travel" && g.country && (data.fundBalances[g.fundId] || 0) < g.target);
@@ -810,6 +846,46 @@ function AmountInput({ value, onChange, placeholder, style, className, autoFocus
   );
 }
 
+// Generic edit modal — used by every ledger (income, expense, accounts, dues, pools)
+// so fixing an entry doesn't mean delete-and-recreate it.
+function EditEntryModal({ title, fields, values, onChange, onSave, onCancel }) {
+  return (
+    <div style={S.calcOverlay} onClick={onCancel}>
+      <div style={S.calcModal} onClick={(e) => e.stopPropagation()}>
+        <div style={S.calcHeader}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: T.ivory }}>{title}</div>
+          <button style={S.calcCloseBtn} onClick={onCancel}><X size={16} color={T.ivory} /></button>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {fields.map((f) =>
+            f.type === "select" ? (
+              <select key={f.key} value={values[f.key] ?? ""} onChange={(e) => onChange(f.key, e.target.value)} style={{ ...S.select, width: "100%" }}>
+                {f.options.map((o) => {
+                  const opt = typeof o === "string" ? { value: o, label: o } : o;
+                  return <option key={opt.value} value={opt.value}>{opt.label}</option>;
+                })}
+              </select>
+            ) : f.type === "amount" ? (
+              <AmountInput key={f.key} placeholder={f.label} value={values[f.key]} onChange={(v) => onChange(f.key, v)} style={{ ...S.input, width: "100%" }} className="tnum" />
+            ) : (
+              <input
+                key={f.key}
+                type={f.type || "text"}
+                placeholder={f.label}
+                value={values[f.key] ?? ""}
+                onChange={(e) => onChange(f.key, e.target.value)}
+                style={{ ...S.input, width: "100%" }}
+                className={f.type === "date" ? "tnum" : undefined}
+              />
+            )
+          )}
+          <button style={S.submitBtnGreen} className="npop" onClick={onSave}>SAVE CHANGES</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function VoiceLogButton({ data, persist, registerActivity, setToast, triggerNoteAnim }) {
   const [open, setOpen] = useState(false);
   const [listening, setListening] = useState(false);
@@ -1266,6 +1342,7 @@ export default function Khata() {
   useFonts();
   const [data, setData] = useState(null);
   const dataRef = useRef(null);
+  const lastUpdatedAtRef = useRef(null); // version token for optimistic-concurrency saves
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState("overview");
@@ -1274,6 +1351,8 @@ export default function Khata() {
   const [calcOpen, setCalcOpen] = useState(false);
   const [unlocked, setUnlocked] = useState(false);
   const [lockSetupOpen, setLockSetupOpen] = useState(false);
+  const [conflictNotice, setConflictNotice] = useState(null);
+  const conflictNoticeTokenRef = useRef(0); // guards against an unrelated toast's timeout clearing this one early
 
   const triggerNoteAnim = useCallback((amount, direction) => {
     const notes = breakIntoNotes(amount);
@@ -1285,7 +1364,7 @@ export default function Khata() {
     (async () => {
       try {
         const remote = await loadFromSupabase();
-        const loaded = remote || emptyData();
+        const loaded = remote.data || emptyData();
         loaded.goals = loaded.goals || [];
         loaded.receivables = loaded.receivables || [];
         loaded.payables = loaded.payables || [];
@@ -1317,10 +1396,12 @@ export default function Khata() {
         loaded.northStar = loaded.northStar || "";
         loaded.pinLock = loaded.pinLock || { enabled: false, pin: null };
         dataRef.current = loaded;
+        lastUpdatedAtRef.current = remote.updatedAt;
         setData(loaded);
       } catch {
         const empty = emptyData();
         dataRef.current = empty;
+        lastUpdatedAtRef.current = null;
         setData(empty);
       } finally {
         setLoading(false);
@@ -1333,7 +1414,24 @@ export default function Khata() {
     setData(next);
     setSaving(true);
     try {
-      await saveToSupabase(next);
+      const result = await saveToSupabase(next, lastUpdatedAtRef.current);
+      if (result.ok) {
+        lastUpdatedAtRef.current = result.updatedAt;
+        return;
+      }
+      // Someone else (the Telegram/WhatsApp bot, or another tab) saved in between reads —
+      // don't silently overwrite their write. Pull the latest version down instead and
+      // let the user redo their change against it.
+      const fresh = await loadFromSupabase();
+      const freshData = fresh.data || dataRef.current;
+      dataRef.current = freshData;
+      lastUpdatedAtRef.current = fresh.updatedAt;
+      setData(freshData);
+      // uses its own state (not the shared `toast`) so an unrelated action's toast-clear
+      // timeout — e.g. the "+5 XP" toast the same button press already queued — can't wipe this early
+      const token = ++conflictNoticeTokenRef.current;
+      setConflictNotice("DATA CHANGED ELSEWHERE — REFRESHED TO LATEST. PLEASE REDO YOUR LAST CHANGE.");
+      setTimeout(() => { if (conflictNoticeTokenRef.current === token) setConflictNotice(null); }, 5000);
     } finally {
       setSaving(false);
     }
@@ -1563,6 +1661,7 @@ export default function Khata() {
       )}
       {lockSetupOpen && <PinSetupModal data={data} persist={persist} onClose={() => setLockSetupOpen(false)} />}
       {toast && <div style={S.toast}>{toast}</div>}
+      {conflictNotice && <div style={S.conflictToast}>{conflictNotice}</div>}
     </div>
   );
 }
@@ -3327,6 +3426,8 @@ function IncomeTab({ data, persist, registerActivity, setToast, triggerNoteAnim 
   const [form, setForm] = useState({ amount: "", source: INCOME_SOURCES[0], note: "", date: todayISO(), account: "none" });
   const [showForm, setShowForm] = useState(false);
   const [search, setSearch] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editValues, setEditValues] = useState(null);
 
   const sorted = useMemo(() => {
     const s = [...data.income].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id);
@@ -3369,6 +3470,24 @@ function IncomeTab({ data, persist, registerActivity, setToast, triggerNoteAnim 
       });
     }
     persist({ ...data, income: data.income.filter((e) => e.id !== id), fundBalances });
+  };
+
+  const startEdit = (e) => {
+    setEditingId(e.id);
+    setEditValues({ amount: String(e.amount), source: e.source, note: e.note || "", date: e.date });
+  };
+  const saveEdit = () => {
+    const amt = parseFloat(editValues.amount);
+    if (!amt || amt <= 0) return;
+    const entry = data.income.find((e) => e.id === editingId);
+    const newDelta = fundDeltaForAmount(data.funds, amt, 1);
+    const fundBalances = swapFundDelta(data.fundBalances, entry.fundDelta, newDelta);
+    const income = data.income.map((e) =>
+      e.id === editingId ? { ...e, amount: amt, source: editValues.source, note: editValues.note.trim(), date: editValues.date, fundDelta: newDelta } : e
+    );
+    persist({ ...data, income, fundBalances });
+    setEditingId(null);
+    setEditValues(null);
   };
 
   return (
@@ -3414,10 +3533,27 @@ function IncomeTab({ data, persist, registerActivity, setToast, triggerNoteAnim 
               {e.note && <div style={S.ledgerNote}>{e.note}</div>}
             </div>
             <div style={{ ...S.ledgerAmt, color: T.green }} className="tnum">+{fmt(e.amount)}</div>
+            <button style={S.editBtn} onClick={() => startEdit(e)}><Pencil size={12} color={T.muted} /></button>
             <button style={S.deleteBtn} onClick={() => removeEntry(e.id)}><Trash2 size={13} color={T.muted} /></button>
           </div>
         ))}
       </div>
+
+      {editingId && editValues && (
+        <EditEntryModal
+          title="EDIT INCOME"
+          values={editValues}
+          onChange={(key, val) => setEditValues({ ...editValues, [key]: val })}
+          onSave={saveEdit}
+          onCancel={() => { setEditingId(null); setEditValues(null); }}
+          fields={[
+            { key: "amount", type: "amount", label: "amount" },
+            { key: "date", type: "date", label: "date" },
+            { key: "source", type: "select", label: "source", options: INCOME_SOURCES },
+            { key: "note", type: "text", label: "note (optional)" },
+          ]}
+        />
+      )}
     </div>
   );
 }
@@ -3526,6 +3662,8 @@ function ExpenseTab({ data, persist, registerActivity, setToast, triggerNoteAnim
   const [entryType, setEntryType] = useState("expense"); // expense | waste | sold_order | inventory_cashout
   const [showForm, setShowForm] = useState(false);
   const [search, setSearch] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editValues, setEditValues] = useState(null);
   const [form, setForm] = useState({
     amount: "", category: EXPENSE_CATEGORIES[0], note: "", date: todayISO(), wasteType: WASTE_TYPES[0], account: "none",
     itemName: "", qty: "", saleValue: "", expectedProfit: "", moneyReceived: "", moneyDue: "", recipientName: "", expectedReceivableDate: "",
@@ -3655,6 +3793,33 @@ function ExpenseTab({ data, persist, registerActivity, setToast, triggerNoteAnim
       });
     }
     persist({ ...data, expenses: data.expenses.filter((e) => e.id !== id), fundBalances });
+  };
+
+  const startEdit = (e) => {
+    setEditingId(e.id);
+    setEditValues({ amount: String(e.amount), category: e.category, note: e.note || "", date: e.date });
+  };
+  const saveEdit = () => {
+    const amt = parseFloat(editValues.amount);
+    if (!amt || amt <= 0) return;
+    const entry = data.expenses.find((e) => e.id === editingId);
+    const newDelta = fundDeltaForAmount(data.funds, amt, -1);
+    const fundBalances = swapFundDelta(data.fundBalances, entry.fundDelta, newDelta);
+    const category = editValues.category.trim() || entry.category;
+    const expenses = data.expenses.map((e) =>
+      e.id === editingId ? { ...e, amount: amt, category, note: editValues.note.trim(), date: editValues.date, fundDelta: newDelta } : e
+    );
+    // pool-linked expenses are mirrored inside expensePools[].entries — keep that copy in sync
+    const expensePools = entry.poolId
+      ? data.expensePools.map((p) =>
+          p.id === entry.poolId
+            ? { ...p, entries: p.entries.map((pe) => (pe.linkedExpenseId === entry.id ? { ...pe, amount: amt, date: editValues.date, note: editValues.note.trim() } : pe)) }
+            : p
+        )
+      : data.expensePools;
+    persist({ ...data, expenses, expensePools, fundBalances });
+    setEditingId(null);
+    setEditValues(null);
   };
 
   const TYPE_TABS = [
@@ -3802,10 +3967,27 @@ function ExpenseTab({ data, persist, registerActivity, setToast, triggerNoteAnim
               {e.note && <div style={S.ledgerNote}>{e.note}</div>}
             </div>
             <div style={{ ...S.ledgerAmt, color: T.orange }} className="tnum">−{fmt(e.amount)}</div>
+            <button style={S.editBtn} onClick={() => startEdit(e)}><Pencil size={12} color={T.muted} /></button>
             <button style={S.deleteBtn} onClick={() => removeEntry(e.id)}><Trash2 size={13} color={T.muted} /></button>
           </div>
         ))}
       </div>
+
+      {editingId && editValues && (
+        <EditEntryModal
+          title="EDIT EXPENSE"
+          values={editValues}
+          onChange={(key, val) => setEditValues({ ...editValues, [key]: val })}
+          onSave={saveEdit}
+          onCancel={() => { setEditingId(null); setEditValues(null); }}
+          fields={[
+            { key: "amount", type: "amount", label: "amount" },
+            { key: "date", type: "date", label: "date" },
+            { key: "category", type: "text", label: "category" },
+            { key: "note", type: "text", label: "note (optional)" },
+          ]}
+        />
+      )}
     </div>
   );
 }
@@ -4131,6 +4313,8 @@ function DuesTab({ data, persist }) {
   const [form, setForm] = useState({ party: "", amount: "", purpose: "personal", dueDate: "", note: "" });
   const [showForm, setShowForm] = useState(false);
   const [openParty, setOpenParty] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+  const [editValues, setEditValues] = useState(null);
 
   const list = subTab === "receivable" ? data.receivables : data.payables;
   const key = subTab === "receivable" ? "receivables" : "payables";
@@ -4150,6 +4334,25 @@ function DuesTab({ data, persist }) {
   };
   const removeEntry = (id) => persist({ ...data, [key]: list.filter((e) => e.id !== id) });
   const totalPending = list.filter((e) => e.status !== doneStatus).reduce((s, e) => s + e.amount, 0);
+
+  const startEdit = (e) => {
+    setEditingId(e.id);
+    setEditValues({ party: e.party, amount: String(e.amount), purpose: e.purpose || "personal", dueDate: e.dueDate || "", note: e.note || "" });
+  };
+  const saveEdit = () => {
+    const amt = parseFloat(editValues.amount);
+    if (!editValues.party.trim() || !amt || amt <= 0) return;
+    persist({
+      ...data,
+      [key]: list.map((e) =>
+        e.id === editingId
+          ? { ...e, party: editValues.party.trim(), amount: amt, purpose: editValues.purpose, dueDate: editValues.dueDate || null, note: editValues.note.trim() }
+          : e
+      ),
+    });
+    setEditingId(null);
+    setEditValues(null);
+  };
 
   const grouped = useMemo(() => {
     const map = {};
@@ -4238,6 +4441,7 @@ function DuesTab({ data, persist }) {
                         <button style={S.smallToggle} onClick={(ev) => { ev.stopPropagation(); toggleStatus(e.id); }}>
                           <Check size={12} color={e.status === doneStatus ? T.green : T.muted} />
                         </button>
+                        <button style={S.editBtn} onClick={(ev) => { ev.stopPropagation(); startEdit(e); }}><Pencil size={12} color={T.muted} /></button>
                         <button style={S.deleteBtn} onClick={(ev) => { ev.stopPropagation(); removeEntry(e.id); }}><Trash2 size={13} color={T.muted} /></button>
                       </div>
                     ))}
@@ -4248,6 +4452,23 @@ function DuesTab({ data, persist }) {
           );
         })}
       </div>
+
+      {editingId && editValues && (
+        <EditEntryModal
+          title={subTab === "receivable" ? "EDIT RECEIVABLE" : "EDIT PAYABLE"}
+          values={editValues}
+          onChange={(key2, val) => setEditValues({ ...editValues, [key2]: val })}
+          onSave={saveEdit}
+          onCancel={() => { setEditingId(null); setEditValues(null); }}
+          fields={[
+            { key: "party", type: "text", label: subTab === "receivable" ? "who owes you" : "who you owe" },
+            { key: "amount", type: "amount", label: "amount" },
+            { key: "purpose", type: "select", label: "purpose", options: [{ value: "personal", label: "PERSONAL" }, { value: "business", label: "BUSINESS" }] },
+            { key: "dueDate", type: "date", label: "expected date" },
+            { key: "note", type: "text", label: "note (optional)" },
+          ]}
+        />
+      )}
     </div>
   );
 }
@@ -4266,6 +4487,8 @@ function AccountsTab({ data, persist }) {
   const [expandedDay, setExpandedDay] = useState(null);
   const [editingStart, setEditingStart] = useState(false);
   const [startDraft, setStartDraft] = useState("0");
+  const [editingId, setEditingId] = useState(null);
+  const [editValues, setEditValues] = useState(null);
 
   const acc = data.accounts[subTab];
   const accMeta = ACCOUNT_TYPES.find((a) => a.id === subTab);
@@ -4304,6 +4527,20 @@ function AccountsTab({ data, persist }) {
   };
   const removeEntry = (id) => {
     persist({ ...data, accounts: { ...data.accounts, [subTab]: { ...acc, entries: acc.entries.filter((e) => e.id !== id) } } });
+  };
+  const startEdit = (e) => {
+    setEditingId(e.id);
+    setEditValues({ amount: String(e.amount), type: e.type, note: e.note || "", date: e.date });
+  };
+  const saveEdit = () => {
+    const amt = parseFloat(editValues.amount);
+    if (!amt || amt <= 0) return;
+    const entries = acc.entries.map((e) =>
+      e.id === editingId ? { ...e, amount: amt, type: editValues.type, note: editValues.note.trim(), date: editValues.date } : e
+    );
+    persist({ ...data, accounts: { ...data.accounts, [subTab]: { ...acc, entries } } });
+    setEditingId(null);
+    setEditValues(null);
   };
   const saveStart = () => {
     persist({ ...data, accounts: { ...data.accounts, [subTab]: { ...acc, startingBalance: parseFloat(startDraft) || 0 } } });
@@ -4392,6 +4629,7 @@ function AccountsTab({ data, persist }) {
                     <span style={{ color: T.muted }}>{e.note || (e.type === "in" ? "money in" : "money out")}</span>
                     <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <span style={{ color: e.type === "in" ? T.green : T.orange, fontWeight: 700 }}>{e.type === "in" ? "+" : "−"}{fmt(e.amount)}</span>
+                      <button style={S.editBtn} onClick={() => startEdit(e)}><Pencil size={11} color={T.muted} /></button>
                       <button style={S.deleteBtn} onClick={() => removeEntry(e.id)}><Trash2 size={11} color={T.muted} /></button>
                     </span>
                   </div>
@@ -4419,9 +4657,12 @@ function AccountsTab({ data, persist }) {
                   <div style={S.expandPanel} onClick={(e) => e.stopPropagation()}>
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                       {d.entries.map((e) => (
-                        <div key={e.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }} className="tnum">
+                        <div key={e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11 }} className="tnum">
                           <span style={{ color: T.muted }}>{e.note || (e.type === "in" ? "money in" : "money out")}</span>
-                          <span style={{ color: e.type === "in" ? T.green : T.orange, fontWeight: 700 }}>{e.type === "in" ? "+" : "−"}{fmt(e.amount)}</span>
+                          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ color: e.type === "in" ? T.green : T.orange, fontWeight: 700 }}>{e.type === "in" ? "+" : "−"}{fmt(e.amount)}</span>
+                            <button style={S.editBtn} onClick={(ev) => { ev.stopPropagation(); startEdit(e); }}><Pencil size={11} color={T.muted} /></button>
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -4431,6 +4672,22 @@ function AccountsTab({ data, persist }) {
             );
           })}
         </div>
+      )}
+
+      {editingId && editValues && (
+        <EditEntryModal
+          title="EDIT ENTRY"
+          values={editValues}
+          onChange={(key, val) => setEditValues({ ...editValues, [key]: val })}
+          onSave={saveEdit}
+          onCancel={() => { setEditingId(null); setEditValues(null); }}
+          fields={[
+            { key: "type", type: "select", label: "type", options: [{ value: "in", label: "IN" }, { value: "out", label: "OUT" }] },
+            { key: "amount", type: "amount", label: "amount" },
+            { key: "date", type: "date", label: "date" },
+            { key: "note", type: "text", label: "note (optional)" },
+          ]}
+        />
       )}
     </div>
   );
@@ -4443,6 +4700,8 @@ function ExpensePoolTab({ data, persist, registerActivity, setToast, triggerNote
   const [newPool, setNewPool] = useState({ purpose: "", date: todayISO() });
   const [openPoolId, setOpenPoolId] = useState(null);
   const [entryForm, setEntryForm] = useState({ date: todayISO(), amount: "", note: "" });
+  const [editing, setEditing] = useState(null); // { poolId, entryId }
+  const [editValues, setEditValues] = useState(null);
 
   const createPool = () => {
     if (!newPool.purpose.trim()) return;
@@ -4513,6 +4772,32 @@ function ExpensePoolTab({ data, persist, registerActivity, setToast, triggerNote
     });
   };
 
+  const startEdit = (poolId, entry) => {
+    setEditing({ poolId, entryId: entry.id });
+    setEditValues({ amount: String(entry.amount), date: entry.date, note: entry.note || "" });
+  };
+  const saveEdit = () => {
+    const amt = parseFloat(editValues.amount);
+    if (!amt || amt <= 0) return;
+    const pool = data.expensePools.find((p) => p.id === editing.poolId);
+    const poolEntry = pool?.entries.find((e) => e.id === editing.entryId);
+    if (!poolEntry) return;
+    const linked = data.expenses.find((e) => e.id === poolEntry.linkedExpenseId);
+    const newDelta = fundDeltaForAmount(data.funds, amt, -1);
+    const fundBalances = swapFundDelta(data.fundBalances, linked?.fundDelta, newDelta);
+    const expensePools = data.expensePools.map((p) =>
+      p.id === editing.poolId
+        ? { ...p, entries: p.entries.map((e) => (e.id === editing.entryId ? { ...e, amount: amt, date: editValues.date, note: editValues.note.trim() } : e)) }
+        : p
+    );
+    const expenses = data.expenses.map((e) =>
+      e.id === poolEntry.linkedExpenseId ? { ...e, amount: amt, date: editValues.date, note: editValues.note.trim(), fundDelta: newDelta } : e
+    );
+    persist({ ...data, expensePools, expenses, fundBalances });
+    setEditing(null);
+    setEditValues(null);
+  };
+
   const totalAcrossPools = data.expensePools.reduce((s, p) => s + p.entries.reduce((s2, e) => s2 + e.amount, 0), 0);
 
   return (
@@ -4574,6 +4859,7 @@ function ExpensePoolTab({ data, persist, registerActivity, setToast, triggerNote
                           <span style={{ color: T.muted }}>{fmtDateShort(e.date)} · {e.note || "expense"}</span>
                           <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
                             <span style={{ color: T.orange, fontWeight: 700 }}>−{fmt(e.amount)}</span>
+                            <button style={S.editBtn} onClick={() => startEdit(p.id, e)}><Pencil size={11} color={T.muted} /></button>
                             <button style={S.deleteBtn} onClick={() => removePoolEntry(p.id, e)}><Trash2 size={11} color={T.muted} /></button>
                           </span>
                         </div>
@@ -4586,6 +4872,21 @@ function ExpensePoolTab({ data, persist, registerActivity, setToast, triggerNote
           );
         })}
       </div>
+
+      {editing && editValues && (
+        <EditEntryModal
+          title="EDIT POOL ENTRY"
+          values={editValues}
+          onChange={(k, val) => setEditValues({ ...editValues, [k]: val })}
+          onSave={saveEdit}
+          onCancel={() => { setEditing(null); setEditValues(null); }}
+          fields={[
+            { key: "amount", type: "amount", label: "amount" },
+            { key: "date", type: "date", label: "date" },
+            { key: "note", type: "text", label: "what was this for" },
+          ]}
+        />
+      )}
     </div>
   );
 }
@@ -5843,6 +6144,7 @@ const S = {
   ledgerNote: { fontSize: 10.5, color: T.muted, marginTop: 2 },
   ledgerAmt: { fontSize: 14, fontWeight: 700, flexShrink: 0 },
   deleteBtn: { background: "none", border: "none", padding: 4, flexShrink: 0, opacity: 0.6 },
+  editBtn: { background: "none", border: "none", padding: 4, flexShrink: 0, opacity: 0.6 },
   smallToggle: { background: T.bg, border: `1.5px solid ${T.line}`, padding: 4, flexShrink: 0 },
   fineTag: { fontSize: 9, color: T.orange, border: `1.5px solid ${T.orange}`, padding: "1px 5px", marginLeft: 6, fontWeight: 700, letterSpacing: "0.03em" },
   correctionLink: { background: "none", border: "none", color: T.muted, fontSize: 10, textDecoration: "underline", fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, letterSpacing: "0.03em" },
@@ -5943,4 +6245,5 @@ const S = {
   toggleBtn: { display: "flex", alignItems: "center", justifyContent: "center", padding: "11px 16px", background: "none", border: "none", color: T.muted, fontSize: 11.5, fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, letterSpacing: "0.03em" },
 
   toast: { position: "fixed", bottom: 88, left: "50%", transform: "translateX(-50%)", background: T.surfaceHi, border: `2px solid ${T.green}`, boxShadow: "3px 3px 0px #000", color: T.green, fontSize: 11.5, fontWeight: 700, padding: "9px 16px", zIndex: 30, letterSpacing: "0.03em" },
+  conflictToast: { position: "fixed", bottom: 140, left: "50%", transform: "translateX(-50%)", background: T.surfaceHi, border: `2px solid ${T.orange}`, boxShadow: "3px 3px 0px #000", color: T.orange, fontSize: 11, fontWeight: 700, padding: "9px 16px", zIndex: 31, letterSpacing: "0.02em", maxWidth: "88%", textAlign: "center" },
 };
