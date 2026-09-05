@@ -467,11 +467,17 @@ async function fetchAIText(prompt, attempt = 1) {
   const response = await fetch("/api/ai-proxy", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 500, messages: [{ role: "user", content: prompt }] }),
+    body: JSON.stringify({
+      model: "claude-opus-5",
+      max_tokens: 4096,
+      thinking: { type: "adaptive" },
+      messages: [{ role: "user", content: prompt }],
+    }),
   });
   const raw = await response.text();
 
-  if (!raw && attempt < 3) {
+  const retryableStatus = response.status === 429 || response.status >= 500;
+  if ((!raw || retryableStatus) && attempt < 3) {
     await new Promise((r) => setTimeout(r, 700 * attempt));
     return fetchAIText(prompt, attempt + 1);
   }
@@ -1124,9 +1130,9 @@ function CalculatorModal({ onClose, data, persist, registerActivity, setToast, t
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-5",
-          max_tokens: 200,
-          tools: [{ type: "web_search_20250305", name: "web_search" }],
+          model: "claude-opus-5",
+          max_tokens: 500,
+          tools: [{ type: "web_search_20260209", name: "web_search" }],
           messages: [{ role: "user", content: `Search for the current exchange rate: 1 ${currency} to INR (Indian Rupee), right now, today. Reply with ONLY the final numeric rate as a plain number, nothing else — no currency symbols, no words, no explanation. Example valid reply: "83.24"` }],
         }),
       });
@@ -1336,6 +1342,7 @@ const emptyData = () => ({
   ifThenPlan: "",
   northStar: "",
   pinLock: { enabled: false, pin: null },
+  agentMemory: {}, // per-channel (telegram/whatsapp) rolling chat memory for the money agent
 });
 
 export default function Khata() {
@@ -1395,6 +1402,7 @@ export default function Khata() {
         loaded.ifThenPlan = loaded.ifThenPlan || "";
         loaded.northStar = loaded.northStar || "";
         loaded.pinLock = loaded.pinLock || { enabled: false, pin: null };
+        loaded.agentMemory = loaded.agentMemory || {};
         dataRef.current = loaded;
         lastUpdatedAtRef.current = remote.updatedAt;
         setData(loaded);

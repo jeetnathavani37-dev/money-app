@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/telegram-webhook.js": { "maxDuration": 60 },
+    "api/whatsapp-webhook.js": { "maxDuration": 60 },
+    "api/ai-proxy.js": { "maxDuration": 60 }
+  }
+}
