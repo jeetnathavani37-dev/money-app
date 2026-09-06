@@ -8,6 +8,11 @@ import {
   Calculator, Delete, RefreshCw, Layers, Trophy, Swords, Lock, BarChart3,
   FileDown, FileSpreadsheet, Printer, Mic, Zap, Pencil,
 } from "lucide-react";
+import rupee10 from "./assets/notes/rupee-10.jpg";
+import rupee20 from "./assets/notes/rupee-20.jpg";
+import rupee50 from "./assets/notes/rupee-50.jpg";
+import rupee200 from "./assets/notes/rupee-200.jpg";
+import rupee500 from "./assets/notes/rupee-500.jpg";
 
 /* ---------------------------------------------------------------
    NeoPOP (CRED) design system
@@ -625,19 +630,14 @@ function AITipBlock({ prompt }) {
 }
 
 /* ---------------- Currency note breakdown + fly animation ----------------
-   Stylized, denomination-accurate note graphics — NOT photographic scans of
-   real currency (avoided deliberately). Colors/layout mirror real INR notes
-   closely enough to feel real without reproducing security-sensitive designs. */
+   Real photographed INR notes (src/assets/notes) — no ₹100 asset on hand,
+   so it's left out of the breakdown; the greedy algorithm below just uses
+   two ₹50s instead, no visual gap. */
 
-const NOTE_STYLES = {
-  500: { bg: "linear-gradient(135deg, #a89478, #d4c4a0 40%, #8f7a5c)", text: "#3d3220", accent: "#5c4a2e", tagline: "BOSS MOVE" },
-  200: { bg: "linear-gradient(135deg, #f2a627, #e8951a 60%, #c97d0f)", text: "#3a2200", accent: "#7a5000", tagline: "GRINDING" },
-  100: { bg: "linear-gradient(135deg, #c9a0c9, #b088c4 60%, #8f5fa8)", text: "#2e1a3a", accent: "#5c2f78", tagline: "STACKING UP" },
-  50: { bg: "linear-gradient(135deg, #5fcfd6, #3ab8c4 60%, #1f8f9e)", text: "#0a2a30", accent: "#0d5560", tagline: "SIDE HUSTLE" },
-  20: { bg: "linear-gradient(135deg, #c8d94a, #a8c92e 60%, #7fa018)", text: "#2a3300", accent: "#4a5c00", tagline: "SMALL WINS" },
-  10: { bg: "linear-gradient(135deg, #c99a6b, #b07a4a 60%, #8a5a30)", text: "#3a2412", accent: "#5c3a1e", tagline: "EVERY BIT COUNTS" },
+const NOTE_IMAGES = {
+  500: rupee500, 200: rupee200, 50: rupee50, 20: rupee20, 10: rupee10,
 };
-const NOTE_DENOMS = [500, 200, 100, 50, 20, 10];
+const NOTE_DENOMS = [500, 200, 50, 20, 10];
 
 function breakIntoNotes(amount) {
   let remaining = Math.round(amount);
@@ -651,93 +651,30 @@ function breakIntoNotes(amount) {
   return notes;
 }
 
-const BLEED_SHAPE = { 500: "diamond", 200: "circle", 100: "square", 50: "triangle", 20: "hex", 10: "diamond" };
-
-function BleedMark({ shape, color, size = 10 }) {
-  const s = size;
-  if (shape === "circle") return <circle cx={s} cy={s} r={s * 0.7} fill={color} />;
-  if (shape === "square") return <rect x={s * 0.3} y={s * 0.3} width={s * 1.4} height={s * 1.4} fill={color} />;
-  if (shape === "triangle") return <polygon points={`${s},${s * 0.2} ${s * 1.8},${s * 1.8} ${s * 0.2},${s * 1.8}`} fill={color} />;
-  if (shape === "hex") return <polygon points={`${s},0 ${s * 1.9},${s * 0.5} ${s * 1.9},${s * 1.5} ${s},${s * 2} ${s * 0.1},${s * 1.5} ${s * 0.1},${s * 0.5}`} fill={color} />;
-  return <polygon points={`${s},0 ${s * 2},${s} ${s},${s * 2} 0,${s}`} fill={color} />; // diamond
-}
-
 function NoteGraphic({ value, index, direction }) {
-  const style = NOTE_STYLES[value];
-  const gid = `guil-${value}`;
-  const nid = `noise-${value}`;
+  // small alternating tilt so a stack of real note photos reads as a fanned
+  // spread of cash rather than a rigid overlapping row
+  const tilt = (index % 2 === 0 ? -1 : 1) * (3 + (index % 3) * 2);
   return (
-    <div
-      style={{
-        width: 148, height: 68, position: "relative", flexShrink: 0,
-        marginLeft: index === 0 ? 0 : -52,
-        zIndex: 20 + index,
-        animation: `${direction === "in" ? "noteFlyIn" : "noteFlyOut"} 0.65s ease forwards`,
-        animationDelay: `${index * 0.11}s`,
-        boxShadow: "3px 4px 10px rgba(0,0,0,0.55)",
-        borderRadius: 3,
-        overflow: "hidden",
-      }}
-    >
-      <svg width="148" height="68" viewBox="0 0 148 68" style={{ display: "block" }}>
-        <defs>
-          <linearGradient id={`bg-${value}`} x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor={style.accent} stopOpacity="0.55" />
-            <stop offset="45%" stopColor={style.text} stopOpacity="0.06" />
-            <stop offset="100%" stopColor={style.accent} stopOpacity="0.75" />
-          </linearGradient>
-          <pattern id={gid} width="9" height="9" patternUnits="userSpaceOnUse" patternTransform="rotate(15)">
-            <circle cx="4.5" cy="4.5" r="3.4" fill="none" stroke={style.text} strokeOpacity="0.14" strokeWidth="0.5" />
-            <circle cx="4.5" cy="4.5" r="1.1" fill={style.text} fillOpacity="0.1" />
-          </pattern>
-          <filter id={nid}>
-            <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch" result="noise" />
-            <feColorMatrix in="noise" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.05 0" />
-          </filter>
-        </defs>
-
-        {/* base */}
-        <rect width="148" height="68" fill={style.mid || style.accent} />
-        <rect width="148" height="68" fill={`url(#bg-${value})`} />
-        <rect width="148" height="68" fill={`url(#${gid})`} />
-        <rect width="148" height="68" filter={`url(#${nid})`} />
-
-        {/* border frame */}
-        <rect x="2" y="2" width="144" height="64" fill="none" stroke={style.text} strokeOpacity="0.35" strokeWidth="1" />
-
-        {/* corner bleed marks (tactile-ID inspired, not exact currency marks) */}
-        <g opacity="0.85">
-          <g transform="translate(6,6)"><BleedMark shape={BLEED_SHAPE[value]} color={style.text} size={5} /></g>
-          <g transform="translate(130,50)"><BleedMark shape={BLEED_SHAPE[value]} color={style.text} size={5} /></g>
-        </g>
-
-        {/* abstracted pillar mark, original geometry — not traced from currency */}
-        <g transform="translate(120,10)" opacity="0.55">
-          <rect x="0" y="10" width="14" height="3" fill={style.text} />
-          <rect x="4" y="2" width="6" height="9" fill={style.text} />
-          <circle cx="7" cy="1.5" r="2.2" fill="none" stroke={style.text} strokeWidth="1" />
-        </g>
-
-        {/* watermark-style circle */}
-        <circle cx="26" cy="34" r="15" fill="none" stroke={style.text} strokeOpacity="0.3" strokeWidth="1" />
-        <text x="26" y="38" fontSize="9" fontWeight="700" fill={style.text} fillOpacity="0.4" textAnchor="middle" fontFamily="'Space Grotesk', sans-serif">₹{value}</text>
-
-        {/* simple original silhouette — bald head, round glasses, shawl outline. Not traced from currency engraving. */}
-        <g transform="translate(90,14)" opacity="0.5">
-          <path d="M 14 0 C 20 0 24 5 24 11 C 24 15 22 18 19 20 L 19 24 C 26 26 30 31 30 38 L -2 38 C -2 31 2 26 9 24 L 9 20 C 6 18 4 15 4 11 C 4 5 8 0 14 0 Z" fill={style.text} />
-          <circle cx="9" cy="12" r="3.4" fill="none" stroke="rgba(255,255,255,0.55)" strokeWidth="1.3" />
-          <circle cx="19" cy="12" r="3.4" fill="none" stroke="rgba(255,255,255,0.55)" strokeWidth="1.3" />
-          <line x1="12.4" y1="12" x2="15.6" y2="12" stroke="rgba(255,255,255,0.55)" strokeWidth="1.1" />
-        </g>
-
-        {/* denomination */}
-        <text x="70" y="30" fontSize="19" fontWeight="700" fill={style.text} fontFamily="'Space Grotesk', sans-serif">₹{value}</text>
-        <text x="70" y="42" fontSize="6.5" fontWeight="700" fill={style.text} fillOpacity="0.85" letterSpacing="0.5" fontFamily="'Space Grotesk', sans-serif">GUARANTEED BY MONEY BANK</text>
-        <text x="70" y="50" fontSize="6" fontWeight="600" fill={style.text} fillOpacity="0.7" fontFamily="'Space Grotesk', sans-serif">FULL OF HUSTLE</text>
-
-        {/* monument label */}
-        <text x="70" y="61" fontSize="5.5" fontWeight="600" fill={style.text} fillOpacity="0.65" letterSpacing="0.3" fontFamily="'Space Grotesk', sans-serif">{style.tagline}</text>
-      </svg>
+    <div style={{ flexShrink: 0, marginLeft: index === 0 ? 0 : -52, zIndex: 20 + index, transform: `rotate(${tilt}deg)` }}>
+      <div
+        style={{
+          width: 148, height: 68, position: "relative",
+          animation: `${direction === "in" ? "noteFlyIn" : "noteFlyOut"} 0.65s ease forwards`,
+          animationDelay: `${index * 0.11}s`,
+          boxShadow: "3px 4px 10px rgba(0,0,0,0.55)",
+          borderRadius: 3,
+          overflow: "hidden",
+        }}
+      >
+        <img
+          src={NOTE_IMAGES[value]}
+          alt={`₹${value} note`}
+          width={148}
+          height={68}
+          style={{ display: "block", width: 148, height: 68, objectFit: "cover" }}
+        />
+      </div>
     </div>
   );
 }
@@ -6500,23 +6437,15 @@ const S = {
   aiTipResult: { background: T.bg, border: `1.5px solid ${T.purple}`, padding: 10, fontSize: 11.5, color: T.ivory, lineHeight: 1.5, marginTop: 4 },
 
   noteOverlay: {
-    position: "fixed", inset: 0, background: "rgba(13,13,13,0.88)", zIndex: 200,
+    position: "fixed", inset: 0,
+    background: "radial-gradient(ellipse at center, rgba(30,28,22,0.92) 0%, rgba(13,13,13,0.96) 70%)",
+    zIndex: 200,
     display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
     pointerEvents: "none", animation: "overlayFade 2.2s ease forwards",
   },
   noteOverlayMsg: { fontSize: 15, fontWeight: 700, letterSpacing: "0.05em", marginBottom: 8, animation: "overlayMsgPulse 0.5s ease" },
-  noteOverlayLabel: { fontSize: 34, fontWeight: 700, marginBottom: 22, letterSpacing: "-0.01em" },
-  noteStack: { display: "flex", alignItems: "center", justifyContent: "center", flexWrap: "wrap", maxWidth: 340 },
-  noteCard: {
-    width: 128, height: 62, borderRadius: 3, border: "2px solid", position: "relative",
-    display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "6px 8px",
-    boxShadow: "3px 4px 10px rgba(0,0,0,0.5)", flexShrink: 0,
-  },
-  noteTopRow: { display: "flex", justifyContent: "space-between", alignItems: "center" },
-  noteValue: { fontSize: 15, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif" },
-  noteRBIsmall: { fontSize: 7, fontWeight: 700, opacity: 0.8, letterSpacing: "0.05em" },
-  noteEmblem: { width: 16, height: 16, borderRadius: "50%", border: "1.5px solid", position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", opacity: 0.5 },
-  noteBottomRow: { fontSize: 7, fontWeight: 600, opacity: 0.75 },
+  noteOverlayLabel: { fontSize: 36, fontWeight: 700, marginBottom: 24, letterSpacing: "-0.01em", textShadow: "0 2px 24px currentColor" },
+  noteStack: { display: "flex", alignItems: "center", justifyContent: "center", flexWrap: "wrap", maxWidth: 340, filter: "drop-shadow(0 8px 20px rgba(0,0,0,0.6))" },
   noteLeftover: { fontSize: 11, color: T.muted, marginTop: 16, fontWeight: 700 },
   checkboxRow: { display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: T.muted, fontWeight: 600, letterSpacing: "0.02em" },
 
