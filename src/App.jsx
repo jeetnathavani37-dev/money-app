@@ -177,12 +177,20 @@ function nextTravelGoal(data) {
   return travelGoals.find((g) => g.priority) || [...travelGoals].sort((a, b) => (a.targetDate || "9999") > (b.targetDate || "9999") ? 1 : -1)[0];
 }
 
+// Sum of each account's starting balance (cash/bank/forex) — money that existed before any
+// entry was ever logged, same idea as data.openingBalance but tracked per account. Only the
+// starting balance is safe to add here: an account's current balance also includes entries
+// mirrored from income/expense logging, which cashBalance below already counts once.
+function accountsOpeningTotal(data) {
+  return Object.values(data.accounts || {}).reduce((s, a) => s + (a?.startingBalance || 0), 0);
+}
+
 function computeNetWorthQuick(data) {
   const cashBalance = data.income.reduce((s, e) => s + e.amount, 0) - data.expenses.reduce((s, e) => s + e.amount, 0);
   const totalInvested = data.investments.reduce((s, i) => s + i.amount, 0);
   const totalReceivable = data.receivables.filter((r) => r.status !== "received").reduce((s, r) => s + r.amount, 0);
   const totalPayable = data.payables.filter((p) => p.status !== "paid").reduce((s, p) => s + p.amount, 0);
-  return data.openingBalance + cashBalance + totalInvested + totalReceivable - totalPayable;
+  return data.openingBalance + accountsOpeningTotal(data) + cashBalance + totalInvested + totalReceivable - totalPayable;
 }
 
 function buildCSVText(data) {
@@ -453,7 +461,7 @@ function nextOccurrenceOfDueDay(dueDay, fromDateISO) {
 function computeCashFlowTimeline(data, windowDays = 30) {
   const today = todayISO();
   const endDate = new Date(Date.now() + windowDays * 86400000).toISOString().slice(0, 10);
-  const startingCash = data.openingBalance + data.income.reduce((s, e) => s + e.amount, 0) - data.expenses.reduce((s, e) => s + e.amount, 0);
+  const startingCash = data.openingBalance + accountsOpeningTotal(data) + data.income.reduce((s, e) => s + e.amount, 0) - data.expenses.reduce((s, e) => s + e.amount, 0);
 
   const events = [];
   (data.receivables || []).filter((r) => r.status !== "received" && r.dueDate && r.dueDate >= today && r.dueDate <= endDate)
@@ -1830,7 +1838,8 @@ function OverviewTab({ data, persist, registerActivity, setToast, triggerNoteAni
   const totalInvested = data.investments.reduce((s, i) => s + i.amount, 0);
   const totalReceivable = data.receivables.filter((r) => r.status !== "received").reduce((s, r) => s + r.amount, 0);
   const totalPayable = data.payables.filter((p) => p.status !== "paid").reduce((s, p) => s + p.amount, 0);
-  const netWorth = data.openingBalance + cashBalance + totalInvested + totalReceivable - totalPayable;
+  const accountsBalance = accountsOpeningTotal(data);
+  const netWorth = data.openingBalance + accountsBalance + cashBalance + totalInvested + totalReceivable - totalPayable;
 
   const activeGoals = data.goals.filter((g) => (data.fundBalances[g.fundId] || 0) < g.target);
   const travelGoal = data.goals.filter((g) => g.fundId === "travel").sort((a, b) => (b.priority ? 1 : 0) - (a.priority ? 1 : 0))[0];
@@ -1968,12 +1977,13 @@ function OverviewTab({ data, persist, registerActivity, setToast, triggerNoteAni
         totalInvested={totalInvested}
         totalReceivable={totalReceivable}
         totalPayable={totalPayable}
+        accountsBalance={accountsBalance}
       />
     </div>
   );
 }
 
-function NetWorthFooter({ data, persist, netWorth, cashBalance, totalInvested, totalReceivable, totalPayable }) {
+function NetWorthFooter({ data, persist, netWorth, cashBalance, totalInvested, totalReceivable, totalPayable, accountsBalance }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(data.openingBalance);
@@ -1988,7 +1998,7 @@ function NetWorthFooter({ data, persist, netWorth, cashBalance, totalInvested, t
     const inc = data.income.filter((e) => e.date <= dateStr).reduce((s, e) => s + e.amount, 0);
     const exp = data.expenses.filter((e) => e.date <= dateStr).reduce((s, e) => s + e.amount, 0);
     const inv = data.investments.filter((i) => i.date <= dateStr).reduce((s, i) => s + i.amount, 0);
-    return data.openingBalance + (inc - exp) + inv;
+    return data.openingBalance + accountsOpeningTotal(data) + (inc - exp) + inv;
   };
   const coreNow = coreAsOf(todayISO());
   const coreWeekAgo = coreAsOf(weekAgo);
@@ -2006,6 +2016,7 @@ function NetWorthFooter({ data, persist, netWorth, cashBalance, totalInvested, t
         <div style={{ ...S.expandPanel, opacity: 1 }} onClick={(e) => e.stopPropagation()}>
           <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11 }} className="tnum">
             <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: T.muted }}>OPENING BALANCE (BEFORE THIS APP)</span><span style={{ color: T.ivory }}>{fmt(data.openingBalance)}</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: T.muted }}>ACCOUNTS STARTING BALANCE (CASH+BANK+FOREX)</span><span style={{ color: T.ivory }}>{fmt(accountsBalance)}</span></div>
             <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: T.muted }}>CASH (LOGGED IN APP)</span><span style={{ color: T.ivory }}>{fmt(cashBalance)}</span></div>
             <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: T.muted }}>INVESTED</span><span style={{ color: T.ivory }}>{fmt(totalInvested)}</span></div>
             <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: T.muted }}>RECEIVABLE</span><span style={{ color: T.green }}>+{fmt(totalReceivable)}</span></div>
@@ -5883,7 +5894,7 @@ function AnalyticsTab({ data, persist }) {
       const incTillNow = data.income.filter((e) => monthKey(e.date) <= mk).reduce((s, e) => s + e.amount, 0);
       const expTillNow = data.expenses.filter((e) => monthKey(e.date) <= mk).reduce((s, e) => s + e.amount, 0);
       const invTillNow = data.investments.filter((iv) => monthKey(iv.date) <= mk).reduce((s, iv) => s + iv.amount, 0);
-      const nw = data.openingBalance + (incTillNow - expTillNow) + invTillNow;
+      const nw = data.openingBalance + accountsOpeningTotal(data) + (incTillNow - expTillNow) + invTillNow;
       months.push({ month: d.toLocaleDateString("en-IN", { month: "short" }), netWorth: Math.round(nw) });
     }
     return months;
