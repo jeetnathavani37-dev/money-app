@@ -4439,6 +4439,13 @@ function GoalsTab({ data, persist }) {
   const removeGoal = (id) => persist({ ...data, goals: data.goals.filter((g) => g.id !== id) });
   const setPriority = (id) => persist({ ...data, goals: data.goals.map((g) => ({ ...g, priority: g.id === id })) });
 
+  // live preview while creating a goal — the real cost isn't the target, it's the profit
+  // needed to fund that target through the chosen fund's allocation %, and that should be
+  // visible before you save, not something you discover after
+  const previewFund = data.funds.find((f) => f.id === form.fundId) || data.funds[0];
+  const previewTarget = parseFloat(form.target) || 0;
+  const previewProfitNeeded = previewTarget > 0 && previewFund.pct > 0 ? previewTarget / (previewFund.pct / 100) : 0;
+
   return (
     <div>
       <SectionLabel text="GOALS" noMargin />
@@ -4469,6 +4476,13 @@ function GoalsTab({ data, persist }) {
               {data.funds.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
             </select>
           </div>
+          {previewTarget > 0 && (
+            <div style={{ fontSize: 11.5, color: T.gold, fontWeight: 700 }} className="tnum">
+              {previewFund.pct > 0
+                ? `TOTAL PROFIT NEEDED (~${previewFund.pct}% VIA ${previewFund.name.toUpperCase()}): ${fmt(previewProfitNeeded)}`
+                : `${previewFund.name.toUpperCase()} HAS 0% ALLOCATION — ADJUST IT IN FUNDS TO FUND THIS GOAL`}
+            </div>
+          )}
           <input type="date" placeholder="target date (optional)" value={form.targetDate} onChange={(e) => setForm({ ...form, targetDate: e.target.value })} style={{ ...S.input, width: "100%" }} className="tnum" />
           <textarea placeholder="letter to future self (optional) — opens only when this goal is reached" value={form.letter} onChange={(e) => setForm({ ...form, letter: e.target.value })} style={{ ...S.input, width: "100%", minHeight: 60, fontFamily: "'Space Grotesk', sans-serif", resize: "vertical" }} />
           <button style={S.submitBtnGreen} className="npop" onClick={addGoal}>CREATE GOAL</button>
