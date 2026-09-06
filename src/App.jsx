@@ -15,14 +15,15 @@ import rupee200 from "./assets/notes/rupee-200.jpg";
 import rupee500 from "./assets/notes/rupee-500.jpg";
 
 /* ---------------------------------------------------------------
-   NeoPOP (CRED) design system
-   Pop Black #0D0D0D — signature pure background
-   Neo Paccha #E5FE40 — neon green, positive/status/brand energy
-   Poli Purple #6A35FF — primary actions/CTA
-   Voltage Orange #FF5C35 — negative/alert
-   Hard Geometry — border-radius: 0 everywhere
-   High Elevation — hard non-blurred shadows (4px 4px 0 #000), not soft
-   Tactile — every tap presses the block into the surface
+   Private-bank dark UI — quiet, premium, unhurried
+   Pop Black #0A0A0D — near-black canvas with a faint blue undertone
+   Neo Paccha #E5FE40 — signature green, reserved for money/brand moments
+   Soft Violet #7C5CFF — primary actions/CTA
+   Ember Orange #FF6B4A — negative/alert
+   Warm Gold #E8C468 — rare, ceremonial accents (streaks, milestones)
+   Soft Geometry — generous border-radius, hairline borders at 8-16% white
+   Layered Elevation — diffused shadows and colored glows, never hard-edged
+   Glass — sticky header/nav and overlays use backdrop blur
    Font — Space Grotesk (bold geometric, no serif)
 ----------------------------------------------------------------*/
 
@@ -1274,7 +1275,7 @@ function CalculatorModal({ onClose, data, persist, registerActivity, setToast, t
             )}
 
             {convertedINR !== null && (
-              <div style={{ ...S.heroCard, boxShadow: `4px 4px 0px ${T.purple}`, marginTop: 14 }}>
+              <div style={{ ...S.heroCard, boxShadow: glow(T.purple), marginTop: 14 }}>
                 <div style={S.heroLabel}>CONVERTED TO INR</div>
                 <div style={{ ...S.heroNum, color: T.purple }} className="tnum">{fmt(convertedINR)}</div>
                 <button style={{ ...S.submitBtnGreen, marginTop: 10 }} className="npop" onClick={useInCalc}>USE IN CALCULATOR</button>
@@ -1617,24 +1618,25 @@ export default function Khata() {
   return (
     <div style={S.app}>
       <style>{`
-        * { box-sizing: border-box; }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
         input, select { font-family: 'Space Grotesk', sans-serif; }
         input::placeholder { color: ${T.muted}; }
+        input:focus, select:focus, textarea:focus { outline: none; border-color: ${T.lineStrong} !important; }
         .tnum { font-variant-numeric: tabular-nums; }
         button { cursor: pointer; font-family: 'Space Grotesk', sans-serif; }
         ::-webkit-scrollbar { width: 8px; height: 8px; }
-        ::-webkit-scrollbar-thumb { background: ${T.line}; }
+        ::-webkit-scrollbar-thumb { background: ${T.line}; border-radius: 8px; }
 
         .npop {
-          transition: transform 0.08s ease, box-shadow 0.08s ease;
+          transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
         }
         .npop:active {
-          transform: translate(3px, 3px);
-          box-shadow: 1px 1px 0px #000 !important;
+          transform: scale(0.97);
+          opacity: 0.88;
         }
         .npop-flat:active {
-          transform: translate(2px, 2px);
-          box-shadow: none !important;
+          transform: scale(0.97);
+          opacity: 0.8;
         }
 
         @keyframes noteFlyIn {
@@ -1794,8 +1796,8 @@ function BottomNav({ tab, setTab }) {
         const active = tab === it.id;
         return (
           <button key={it.id} onClick={() => setTab(it.id)} style={S.navBtn} className="npop-flat">
-            <div style={{ ...S.navIconWrap, ...(active ? { background: T.green, boxShadow: `2px 2px 0px #000` } : {}) }}>
-              <Icon size={16} color={active ? T.bg : T.muted} strokeWidth={2.4} />
+            <div style={{ ...S.navIconWrap, ...(active ? { background: `${T.green}22`, boxShadow: glow(T.green, 0.18) } : {}) }}>
+              <Icon size={16} color={active ? T.green : T.muted} strokeWidth={2.4} />
             </div>
             <span style={{ ...S.navLabel, color: active ? T.ivory : T.muted }}>{it.label}</span>
           </button>
@@ -1893,7 +1895,7 @@ function OverviewTab({ data, persist, registerActivity, setToast, triggerNoteAni
               const daysLeft = daysBetween(today, g.targetDate);
               const daily = remaining / daysLeft;
               return (
-                <div key={g.id} style={{ ...S.miniGoalCard, boxShadow: `2px 2px 0px ${fund?.color}` }}>
+                <div key={g.id} style={{ ...S.miniGoalCard, boxShadow: glow(fund?.color) }}>
                   <div style={S.miniGoalTop}>
                     <span style={S.miniGoalName}>{g.name.toUpperCase()}</span>
                     <Target size={13} color={fund?.color} />
@@ -1989,7 +1991,7 @@ function NetWorthFooter({ data, persist, netWorth, cashBalance, totalInvested, t
   const nwPct = coreWeekAgo !== 0 ? Math.round(((coreNow - coreWeekAgo) / Math.abs(coreWeekAgo)) * 1000) / 10 : (coreNow !== 0 ? 100 : null);
 
   return (
-    <div style={{ ...S.statBox, boxShadow: `3px 3px 0px ${netWorth >= 0 ? (T.gold || T.green) : T.orange}`, cursor: "pointer", marginTop: 14 }} className="npop-flat" onClick={() => setOpen((s) => !s)}>
+    <div style={{ ...S.statBox, boxShadow: glow(netWorth >= 0 ? (T.gold || T.green) : T.orange), cursor: "pointer", marginTop: 14 }} className="npop-flat" onClick={() => setOpen((s) => !s)}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={S.statBoxLabel}>NET WORTH</span>
         <WoWBadge pct={nwPct} />
@@ -2027,7 +2029,7 @@ function ReceivablesSummary({ data, totalReceivable }) {
   return (
     <>
       <SectionLabel text="RECEIVABLES" />
-      <div style={{ ...S.statBox, boxShadow: `3px 3px 0px ${T.green}`, marginBottom: 10 }}>
+      <div style={{ ...S.statBox, boxShadow: glow(T.green), marginBottom: 10 }}>
         <div style={S.statBoxLabel}>TOTAL PENDING</div>
         <div style={{ ...S.statBoxNum, color: T.green }} className="tnum">{fmt(totalReceivable)}</div>
       </div>
@@ -2111,7 +2113,7 @@ function SinkingFundsSection({ data, persist, registerActivity, setToast, trigge
           {data.sinkingFunds.map((f) => {
             const pct = Math.min(100, Math.round((f.saved / f.target) * 100));
             return (
-              <div key={f.id} style={{ ...S.statBox, boxShadow: `3px 3px 0px ${T.purple}` }}>
+              <div key={f.id} style={{ ...S.statBox, boxShadow: glow(T.purple) }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontSize: 12, fontWeight: 700, color: T.ivory }}>{f.name.toUpperCase()}</span>
                   <button style={S.deleteBtn} onClick={() => removeFund(f.id)}><Trash2 size={12} color={T.muted} /></button>
@@ -2240,14 +2242,14 @@ function BrokerHoldingsSection({ data, persist }) {
       <div style={{ fontSize: 9.5, color: T.muted, marginBottom: 10 }}>BOTH BROKERS REQUIRE RECONNECTING ONCE A DAY — TOKENS EXPIRE DAILY (EXCHANGE RULE)</div>
 
       {kiteHoldings && kiteHoldings.length > 0 && (
-        <div style={{ ...S.statBox, boxShadow: `3px 3px 0px ${T.orange}`, marginBottom: 10 }}>
+        <div style={{ ...S.statBox, boxShadow: glow(T.orange), marginBottom: 10 }}>
           <div style={S.statBoxLabel}>KITE HOLDINGS VALUE</div>
           <div style={{ ...S.statBoxNum, color: T.orange }} className="tnum">{fmt(kiteTotal)}</div>
           <div style={{ fontSize: 10, color: T.muted, marginTop: 4 }}>{kiteHoldings.length} HOLDINGS</div>
         </div>
       )}
       {motilalHoldings && motilalHoldings.length > 0 && (
-        <div style={{ ...S.statBox, boxShadow: `3px 3px 0px ${T.blue}`, marginBottom: 10 }}>
+        <div style={{ ...S.statBox, boxShadow: glow(T.blue), marginBottom: 10 }}>
           <div style={S.statBoxLabel}>RISE HOLDINGS</div>
           <div style={{ fontSize: 10, color: T.muted, marginTop: 4 }}>{motilalHoldings.length} HOLDINGS FOUND</div>
         </div>
@@ -2351,7 +2353,7 @@ function InvestmentsSection({ data, persist, totalInvested, registerActivity, se
           {showForm ? <X size={14} /> : <Plus size={14} />} {showForm ? "CANCEL" : "ADD"}
         </button>
       </div>
-      <div style={{ ...S.statBox, boxShadow: `3px 3px 0px ${T.purple}`, marginBottom: 10, marginTop: 8 }}>
+      <div style={{ ...S.statBox, boxShadow: glow(T.purple), marginBottom: 10, marginTop: 8 }}>
         <div style={S.statBoxLabel}>TOTAL INVESTED</div>
         <div style={{ ...S.statBoxNum, color: T.purple }} className="tnum">{fmt(totalInvested)}</div>
       </div>
@@ -2359,12 +2361,12 @@ function InvestmentsSection({ data, persist, totalInvested, registerActivity, se
       {(inventoryStats.avgDays !== null || inventoryStats.deadStockCount > 0) && (
         <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
           {inventoryStats.avgDays !== null && (
-            <div style={{ ...S.statBox, flex: 1, boxShadow: `3px 3px 0px ${T.green}` }}>
+            <div style={{ ...S.statBox, flex: 1, boxShadow: glow(T.green) }}>
               <div style={S.statBoxLabel}>AVG DAYS TO SELL</div>
               <div style={{ ...S.statBoxNum, color: T.green, fontSize: 18 }} className="tnum">{inventoryStats.avgDays}</div>
             </div>
           )}
-          <div style={{ ...S.statBox, flex: 1, boxShadow: `3px 3px 0px ${inventoryStats.deadStockCount > 0 ? T.orange : T.green}` }}>
+          <div style={{ ...S.statBox, flex: 1, boxShadow: glow(inventoryStats.deadStockCount > 0 ? T.orange : T.green) }}>
             <div style={S.statBoxLabel}>DEAD STOCK ({DEAD_STOCK_DAYS}D+)</div>
             <div style={{ ...S.statBoxNum, color: inventoryStats.deadStockCount > 0 ? T.orange : T.green, fontSize: 18 }} className="tnum">{inventoryStats.deadStockCount}</div>
           </div>
@@ -2453,7 +2455,7 @@ function HealthScoreCard({ data }) {
   const score = computeHealthScore(data);
   const { label, color } = healthScoreLabel(score);
   return (
-    <div style={{ ...S.statBox, boxShadow: `3px 3px 0px ${color}`, flex: 1 }}>
+    <div style={{ ...S.statBox, boxShadow: glow(color), flex: 1 }}>
       <div style={S.statBoxLabel}>FINANCIAL HEALTH</div>
       <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 4 }}>
         <span style={{ fontSize: 24, fontWeight: 700, color }} className="tnum">{score}</span>
@@ -2531,7 +2533,7 @@ function HeatMeter({ data }) {
   const labels = ["COOL", "COOL", "WARM", "HOT", "BLAZING", "ON FIRE"];
   const color = level >= 4 ? T.orange : level >= 2 ? "#F2C230" : T.green;
   return (
-    <div style={{ ...S.heatBox, boxShadow: `3px 3px 0px ${color}` }}>
+    <div style={{ ...S.heatBox, boxShadow: glow(color) }}>
       <div style={S.statBoxLabel}>HEAT — WASTE THIS WEEK</div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
         <div style={{ display: "flex", gap: 3 }}>
@@ -2555,7 +2557,7 @@ function BossBattle({ data }) {
   const defeated = pct >= 100;
 
   return (
-    <div style={{ ...S.bossBox, boxShadow: `4px 4px 0px ${defeated ? T.green : T.orange}` }}>
+    <div style={{ ...S.bossBox, boxShadow: glow(defeated ? T.green : T.orange) }}>
       <div style={S.bossHeader}>
         <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, fontWeight: 700, color: defeated ? T.green : T.orange, letterSpacing: "0.05em" }}>
           <Swords size={13} /> BOSS BATTLE
@@ -2584,7 +2586,7 @@ function TrophyCase({ data }) {
           const earned = earnedIds.has(t.id);
           const color = TROPHY_TIER_COLOR[t.tier];
           return (
-            <div key={t.id} style={{ ...S.trophyCell, boxShadow: earned ? `2px 2px 0px ${color}` : "none", opacity: earned ? 1 : 0.4 }}>
+            <div key={t.id} style={{ ...S.trophyCell, boxShadow: earned ? glow(color) : "none", opacity: earned ? 1 : 0.4 }}>
               {earned ? <Trophy size={20} color={color} fill={color} /> : <Lock size={16} color={T.muted} />}
               <div style={{ fontSize: 8.5, fontWeight: 700, color: earned ? color : T.muted, textAlign: "center", marginTop: 4, letterSpacing: "0.02em" }}>
                 {t.name.toUpperCase()}
@@ -2745,7 +2747,7 @@ function DailyTip({ data, persist }) {
   }, []);
 
   return (
-    <div style={{ ...S.statBox, boxShadow: `3px 3px 0px ${T.gold || T.green}`, marginTop: 10 }}>
+    <div style={{ ...S.statBox, boxShadow: glow(T.gold || T.green), marginTop: 10 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={S.statBoxLabel}>💡 TODAY'S MONEY MOVE</div>
         <button style={S.correctionLink} onClick={fetchTip} disabled={loading}>{loading ? "..." : "NEW TIP"}</button>
@@ -2958,7 +2960,7 @@ function RuthlessPushBanner({ data }) {
 function MoodRing({ data }) {
   const mood = computeMoodRing(data);
   return (
-    <div style={{ ...S.statBox, boxShadow: `3px 3px 0px ${mood.color}`, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginTop: 10 }}>
+    <div style={{ ...S.statBox, boxShadow: glow(mood.color), display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginTop: 10 }}>
       <span style={{ fontSize: 26 }}>{mood.emoji}</span>
       <div>
         <div style={S.statBoxLabel}>TODAY'S MONEY MOOD</div>
@@ -3319,7 +3321,7 @@ function ProfitTargetsSection({ data, persist, todayProfit, weekProfit, monthPro
             const avgSale = computeAvgSale(data);
             const prompt = `Act as a sharp, encouraging business coach. My ${r.label.toLowerCase()} is ₹${r.target}, I've made ₹${r.actual} so far, ₹${remaining} remaining. ${buildContext(data)} Based on my actual patterns above (which sources/categories perform best, timing, waste spending), give me 2-3 short, specific, actionable sentences on how to hit this target. Be direct and concrete, not generic.`;
             return (
-              <div key={r.key} style={{ ...S.statBox, boxShadow: `3px 3px 0px ${color}`, cursor: "pointer" }} className="npop-flat" onClick={() => setExpanded(isOpen ? null : r.key)}>
+              <div key={r.key} style={{ ...S.statBox, boxShadow: glow(color), cursor: "pointer" }} className="npop-flat" onClick={() => setExpanded(isOpen ? null : r.key)}>
                 <div style={S.statBoxLabel}>{r.label}</div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 6 }}>
                   <span style={{ fontSize: 22, fontWeight: 700, color }} className="tnum">{fmtSigned(r.actual)} / {fmt(r.target)}</span>
@@ -3473,7 +3475,7 @@ function DreamGoalCard({ data, persist, goal, fundId, label }) {
 
   if (!goal) {
     return (
-      <div style={{ ...S.nextUpCard, boxShadow: `4px 4px 0px ${fund.color}`, opacity: 0.7 }}>
+      <div style={{ ...S.nextUpCard, boxShadow: glow(fund.color), opacity: 0.7 }}>
         <div style={{ ...S.nextUpLabel, color: fund.color }}>{label} DREAM GOAL</div>
         <div style={{ fontSize: 14, color: T.muted, marginTop: 6 }}>no dream set yet — add one in the Goals tab</div>
         <div style={{ fontSize: 11, color: T.muted, marginTop: 8 }} className="tnum">fund balance: {fmt(data.fundBalances[fundId] || 0)}</div>
@@ -3491,7 +3493,7 @@ function DreamGoalCard({ data, persist, goal, fundId, label }) {
   const paceDays = daysAtPace(remaining, todayGrowth);
 
   return (
-    <div style={{ ...S.nextUpCard, boxShadow: `4px 4px 0px ${fund.color}`, cursor: "pointer" }} className="npop-flat" onClick={() => setOpen((s) => !s)}>
+    <div style={{ ...S.nextUpCard, boxShadow: glow(fund.color), cursor: "pointer" }} className="npop-flat" onClick={() => setOpen((s) => !s)}>
       <div style={{ ...S.nextUpLabel, color: fund.color, justifyContent: "space-between" }}>
         <span><Pin size={11} color={fund.color} /> {label} DREAM GOAL</span>
         {daysLeft !== null && remaining > 0 && <span style={{ ...S.daysLeftChip, borderColor: fund.color, color: fund.color }} className="tnum">{daysLeft}D LEFT</span>}
@@ -3798,7 +3800,7 @@ function FixedExpensesSection({ data, persist, registerActivity, setToast, trigg
           {data.fixedExpenses.map((fe) => {
             const paid = isPaidThisMonth(fe.id);
             return (
-              <div key={fe.id} style={{ ...S.statBox, boxShadow: `3px 3px 0px ${paid ? T.green : T.orange}`, position: "relative" }}>
+              <div key={fe.id} style={{ ...S.statBox, boxShadow: glow(paid ? T.green : T.orange), position: "relative" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingRight: 16 }}>
                   <div>
                     <div style={{ fontSize: 12, fontWeight: 700, color: T.ivory }}>{fe.name.toUpperCase()}</div>
@@ -4295,7 +4297,7 @@ function FundsTab({ data, persist }) {
             .sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id)
             .slice(0, 6);
           return (
-            <div key={f.id} style={{ ...S.fundCard, boxShadow: `4px 4px 0px ${f.color}`, cursor: "pointer" }} className="npop-flat" onClick={() => setExpandedFund(isOpen ? null : f.id)}>
+            <div key={f.id} style={{ ...S.fundCard, boxShadow: glow(f.color), cursor: "pointer" }} className="npop-flat" onClick={() => setExpandedFund(isOpen ? null : f.id)}>
               <div style={S.fundTop}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span style={{ ...S.pctDot, background: f.color }} />
@@ -4443,7 +4445,7 @@ function GoalsTab({ data, persist }) {
           return (
             <div
               key={g.id}
-              style={{ ...S.goalCard, boxShadow: g.priority ? `4px 4px 0px ${fund.color}` : `4px 4px 0px ${T.line}`, cursor: "pointer" }}
+              style={{ ...S.goalCard, boxShadow: g.priority ? glow(fund.color) : T.shadowSm, cursor: "pointer" }}
               className="npop-flat"
               onClick={() => setExpandedId(isOpen ? null : g.id)}
             >
@@ -4631,7 +4633,7 @@ function DuesTab({ data, persist }) {
           const isOpen = openParty === g.party;
           const color = subTab === "receivable" ? T.green : T.orange;
           return (
-            <div key={g.party} style={{ ...S.goalCard, boxShadow: `4px 4px 0px ${color}`, cursor: "pointer" }} className="npop-flat" onClick={() => setOpenParty(isOpen ? null : g.party)}>
+            <div key={g.party} style={{ ...S.goalCard, boxShadow: glow(color), cursor: "pointer" }} className="npop-flat" onClick={() => setOpenParty(isOpen ? null : g.party)}>
               <div style={S.budgetTop}>
                 <span style={S.budgetName}>{g.party.toUpperCase()}</span>
                 <span style={{ fontSize: 10, color: T.muted }} className="tnum">{g.entries.length} ENTR{g.entries.length === 1 ? "Y" : "IES"}</span>
@@ -4780,7 +4782,7 @@ function AccountsTab({ data, persist }) {
         ))}
       </div>
 
-      <div style={{ ...S.heroCard, boxShadow: `4px 4px 0px ${accMeta.color}` }}>
+      <div style={{ ...S.heroCard, boxShadow: glow(accMeta.color) }}>
         <div style={S.heroLabel}>{accMeta.label} BALANCE</div>
         <div style={{ ...S.heroNum, color: accMeta.color }} className="tnum">{fmt(currentBalance)}</div>
         {editingStart ? (
@@ -4818,7 +4820,7 @@ function AccountsTab({ data, persist }) {
       )}
 
       <div
-        style={{ ...S.statBox, boxShadow: `3px 3px 0px ${accMeta.color}`, cursor: "pointer", marginTop: 4 }}
+        style={{ ...S.statBox, boxShadow: glow(accMeta.color), cursor: "pointer", marginTop: 4 }}
         className="npop-flat"
         onClick={() => setExpandedDay(expandedDay === "today" ? null : "today")}
       >
@@ -5018,7 +5020,7 @@ function ExpensePoolTab({ data, persist, registerActivity, setToast, triggerNote
 
   return (
     <div>
-      <div style={{ ...S.heroCard, boxShadow: `4px 4px 0px ${T.orange}` }}>
+      <div style={{ ...S.heroCard, boxShadow: glow(T.orange) }}>
         <div style={S.heroLabel}>ACROSS ALL POOLS</div>
         <div style={{ ...S.heroNum, color: T.orange }} className="tnum">{fmt(totalAcrossPools)}</div>
         <div style={S.heroSub}>{data.expensePools.length} POOL{data.expensePools.length !== 1 ? "S" : ""} ACTIVE · COUNTS TOWARD FUNDS & EXPENSE TOTALS</div>
@@ -5045,7 +5047,7 @@ function ExpensePoolTab({ data, persist, registerActivity, setToast, triggerNote
           const total = p.entries.reduce((s, e) => s + e.amount, 0);
           const isOpen = openPoolId === p.id;
           return (
-            <div key={p.id} style={{ ...S.goalCard, boxShadow: `4px 4px 0px ${T.orange}`, cursor: "pointer" }} className="npop-flat" onClick={() => setOpenPoolId(isOpen ? null : p.id)}>
+            <div key={p.id} style={{ ...S.goalCard, boxShadow: glow(T.orange), cursor: "pointer" }} className="npop-flat" onClick={() => setOpenPoolId(isOpen ? null : p.id)}>
               <div style={S.budgetTop}>
                 <div>
                   <span style={S.budgetName}>{p.purpose.toUpperCase()}</span>
@@ -5170,7 +5172,7 @@ function HustleTab({ data, persist }) {
       <PermanentQuoteCard />
 
       <SectionLabel text="YOUR NORTH STAR" noMargin />
-      <div style={{ ...S.heroCard, boxShadow: `4px 4px 0px ${T.gold || T.green}`, cursor: "pointer" }} onClick={() => !editingStar && setEditingStar(true)}>
+      <div style={{ ...S.heroCard, boxShadow: glow(T.gold || T.green), cursor: "pointer" }} onClick={() => !editingStar && setEditingStar(true)}>
         {editingStar ? (
           <>
             <textarea
@@ -5288,7 +5290,7 @@ function HustleTab({ data, persist }) {
             const dailyNeeded = daysLeft && daysLeft > 0 && remaining > 0 ? remaining / daysLeft : null;
             const weeklyNeeded = dailyNeeded ? dailyNeeded * 7 : null;
             return (
-              <div key={v.id} style={{ ...S.heroCard, position: "relative", boxShadow: `4px 4px 0px ${daysLeft !== null && daysLeft <= 30 ? T.orange : (T.gold || T.green)}` }}>
+              <div key={v.id} style={{ ...S.heroCard, position: "relative", boxShadow: glow(daysLeft !== null && daysLeft <= 30 ? T.orange : (T.gold || T.green)) }}>
                 <button style={{ ...S.deleteBtn, position: "absolute", top: 8, right: 8, zIndex: 5 }} onClick={() => removeVisionItem(v.id)}><Trash2 size={12} color={T.muted} /></button>
                 {v.photo && <Tilt3DCard src={v.photo} />}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginTop: v.photo ? 8 : 0 }}>
@@ -5352,7 +5354,7 @@ function HustleTab({ data, persist }) {
         </div>
 
         {streakAtRisk && (
-          <div style={{ ...S.statBox, boxShadow: `3px 3px 0px ${T.orange}` }}>
+          <div style={{ ...S.statBox, boxShadow: glow(T.orange) }}>
             <div style={S.statBoxLabel}>LOSS CHECK</div>
             <div style={{ fontSize: 12.5, color: T.ivory, marginTop: 6 }}>
               You've built a <b style={{ color: T.orange }}>{data.streak.count}-day streak</b> and <b style={{ color: T.orange }}>{fmtSigned(netWorth)}</b> net worth. One lazy week doesn't just cost money — it costs the momentum you already earned.
@@ -5370,7 +5372,7 @@ function HustleTab({ data, persist }) {
               const bal = data.fundBalances[g.fundId] || 0;
               const pct = Math.min(100, Math.round((bal / g.target) * 100));
               return (
-                <div key={g.id} style={{ ...S.statBox, boxShadow: `3px 3px 0px ${fund?.color}` }}>
+                <div key={g.id} style={{ ...S.statBox, boxShadow: glow(fund?.color) }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <span style={{ fontSize: 12, fontWeight: 700, color: T.ivory }}>
                       {g.country && <span style={{ marginRight: 6 }}>{countryFlag(g.country)}</span>}
@@ -5415,7 +5417,7 @@ function HustleTab({ data, persist }) {
       {lalaTotal > 0 && (
         <>
           <SectionLabel text="THE GIVING SIDE" />
-          <div style={{ ...S.statBox, boxShadow: `3px 3px 0px ${T.purple}` }}>
+          <div style={{ ...S.statBox, boxShadow: glow(T.purple) }}>
             <div style={S.statBoxLabel}>LALA FUND GIVEN SO FAR</div>
             <div style={{ ...S.statBoxNum, color: T.purple }} className="tnum">{fmt(lalaTotal)}</div>
             <div style={{ fontSize: 10.5, color: T.muted, marginTop: 4 }}>EVERY RUPEE YOU MAKE, SOMEONE ELSE FEELS TOO</div>
@@ -5428,7 +5430,7 @@ function HustleTab({ data, persist }) {
 
 /* ---------------- Analytics ---------------- */
 
-const CHART_TOOLTIP_STYLE = { background: "#1E1E1E", border: "1.5px solid #2A2A2A", borderRadius: 0, fontFamily: "'Space Grotesk', sans-serif", fontSize: 12 };
+const CHART_TOOLTIP_STYLE = { background: "#1C1C23", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, boxShadow: "0 8px 28px rgba(0,0,0,0.45)", fontFamily: "'Space Grotesk', sans-serif", fontSize: 12 };
 
 function BudgetVsActual({ data, persist }) {
   const [showForm, setShowForm] = useState(false);
@@ -5478,7 +5480,7 @@ function BudgetVsActual({ data, persist }) {
             const pct = Math.min(100, Math.round((actual / b.limit) * 100));
             const over = actual > b.limit;
             return (
-              <div key={b.category} style={{ ...S.statBox, boxShadow: `3px 3px 0px ${over ? T.orange : T.green}` }}>
+              <div key={b.category} style={{ ...S.statBox, boxShadow: glow(over ? T.orange : T.green) }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontSize: 12, fontWeight: 700, color: T.ivory }}>{b.category.toUpperCase()}</span>
                   <button style={S.deleteBtn} onClick={() => removeBudget(b.category)}><Trash2 size={12} color={T.muted} /></button>
@@ -6017,7 +6019,7 @@ function AnalyticsTab({ data, persist }) {
       </ChartCard>
 
       <SectionLabel text="LONG-TERM WEALTH PROJECTION" />
-      <div style={{ ...S.heroCard, boxShadow: `4px 4px 0px ${T.gold || T.green}` }}>
+      <div style={{ ...S.heroCard, boxShadow: glow(T.gold || T.green) }}>
         <div style={S.heroLabel}>AT CURRENT PACE ({fmtSigned(wealthProjection.avgMonthlyGrowth)}/MO)</div>
         {wealthProjection.avgMonthlyGrowth <= 0 ? (
           <div style={{ fontSize: 12, color: T.orange, marginTop: 8, fontWeight: 700 }}>
@@ -6176,7 +6178,7 @@ function AnalyticsTab({ data, persist }) {
       {recurringExpenses.length === 0 ? <EmptyNote text="log a category across 2+ months to detect patterns" /> : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {recurringExpenses.map((r) => (
-            <div key={r.category} style={{ ...S.statBox, boxShadow: `3px 3px 0px ${T.purple}` }}>
+            <div key={r.category} style={{ ...S.statBox, boxShadow: glow(T.purple) }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontSize: 12, fontWeight: 700, color: T.ivory }}>{r.category.toUpperCase()}</span>
                 <span style={{ fontSize: 13, fontWeight: 700, color: T.purple }} className="tnum">~{fmt(r.avgAmount)}/mo</span>
@@ -6191,7 +6193,7 @@ function AnalyticsTab({ data, persist }) {
       {anomalies.length === 0 ? <EmptyNote text="no unusual spending detected" /> : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {anomalies.map((a) => (
-            <div key={a.id} style={{ ...S.statBox, boxShadow: `3px 3px 0px ${T.orange}` }}>
+            <div key={a.id} style={{ ...S.statBox, boxShadow: glow(T.orange) }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontSize: 12, fontWeight: 700, color: T.ivory }}>{a.category.toUpperCase()}</span>
                 <span style={{ fontSize: 13, fontWeight: 700, color: T.orange }} className="tnum">{fmt(a.amount)}</span>
@@ -6203,7 +6205,7 @@ function AnalyticsTab({ data, persist }) {
       )}
 
       <SectionLabel text="30-DAY CASH FLOW FORECAST" />
-      <div style={{ ...S.heroCard, boxShadow: `4px 4px 0px ${forecast30.projectedBalance >= 0 ? T.green : T.orange}` }}>
+      <div style={{ ...S.heroCard, boxShadow: glow(forecast30.projectedBalance >= 0 ? T.green : T.orange) }}>
         <div style={S.heroLabel}>PROJECTED BALANCE IN 30 DAYS</div>
         <div style={{ ...S.heroNum, color: forecast30.projectedBalance >= 0 ? T.ivory : T.orange }} className="tnum">{fmtSigned(forecast30.projectedBalance)}</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 10, fontSize: 11 }} className="tnum">
@@ -6288,7 +6290,7 @@ function AnalyticsTab({ data, persist }) {
       {ghostMode && (
         <>
           <SectionLabel text="GHOST MODE — VS YOUR BEST MONTH" />
-          <div style={{ ...S.heroCard, boxShadow: `4px 4px 0px ${ghostMode.diff >= 0 ? T.green : T.orange}` }}>
+          <div style={{ ...S.heroCard, boxShadow: glow(ghostMode.diff >= 0 ? T.green : T.orange) }}>
             <div style={S.heroLabel}>RACING AGAINST {monthLabel(ghostMode.bestMonth).toUpperCase()} (BEST: {fmt(ghostMode.bestTotal)})</div>
             <div style={{ ...S.heroNum, color: ghostMode.diff >= 0 ? T.green : T.orange }} className="tnum">
               {ghostMode.diff >= 0 ? "AHEAD BY " : "BEHIND BY "}{fmt(Math.abs(ghostMode.diff))}
@@ -6351,90 +6353,108 @@ function EmptyNote({ text }) {
 /* ---------------- NeoPOP tokens + styles ---------------- */
 
 const T = {
-  bg: "#0D0D0D",
-  surface: "#161616",
-  surfaceHi: "#1E1E1E",
-  line: "#2A2A2A",
+  bg: "#0A0A0D",
+  surface: "#141419",
+  surfaceHi: "#1C1C23",
+  line: "rgba(255,255,255,0.09)",
+  lineStrong: "rgba(255,255,255,0.18)",
   green: "#E5FE40",
-  purple: "#6A35FF",
-  orange: "#FF5C35",
-  blue: "#35C9FF",
-  ivory: "#F5F5F0",
-  muted: "#7A7A7A",
+  purple: "#7C5CFF",
+  orange: "#FF6B4A",
+  blue: "#4FC8FF",
+  gold: "#E8C468",
+  ivory: "#F5F5F1",
+  muted: "#8B8D93",
+  radiusSm: 10,
+  radiusMd: 14,
+  radiusLg: 18,
+  radiusXl: 24,
+  radiusPill: 999,
+  shadowSm: "0 2px 10px rgba(0,0,0,0.30)",
+  shadowMd: "0 8px 28px rgba(0,0,0,0.42)",
+  shadowLg: "0 20px 56px rgba(0,0,0,0.55)",
 };
+
+// Soft colored elevation for accent surfaces — e.g. glow(T.green, 0.3)
+function glow(hex, alpha = 0.28) {
+  if (typeof hex !== "string" || !/^#[0-9a-fA-F]{6}$/.test(hex)) return T.shadowSm;
+  const h = hex.replace("#", "");
+  const r = parseInt(h.substring(0, 2), 16), g = parseInt(h.substring(2, 4), 16), b = parseInt(h.substring(4, 6), 16);
+  return `0 8px 24px rgba(${r},${g},${b},${alpha})`;
+}
 
 const S = {
   app: { minHeight: "100vh", background: T.bg, color: T.ivory, fontFamily: "'Space Grotesk', sans-serif", paddingBottom: 84 },
-  topBar: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "20px 18px 16px 18px", position: "sticky", top: 0, background: T.bg, zIndex: 10, borderBottom: `2px solid ${T.line}` },
-  wordmark: { fontSize: 22, fontWeight: 700, letterSpacing: "0.03em" },
-  whyBanner: { background: T.surface, border: `2.5px solid ${T.gold || T.green}`, boxShadow: "4px 4px 0px #000", padding: "14px 14px", marginTop: 12, marginBottom: 12, cursor: "pointer" },
-  whyLabel: { fontSize: 9.5, fontWeight: 700, color: T.gold || T.green, letterSpacing: "0.05em" },
+  topBar: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "20px 18px 16px 18px", position: "sticky", top: 0, background: "rgba(10,10,13,0.82)", backdropFilter: "blur(20px) saturate(150%)", WebkitBackdropFilter: "blur(20px) saturate(150%)", zIndex: 10, borderBottom: `1px solid ${T.line}` },
+  wordmark: { fontSize: 22, fontWeight: 700, letterSpacing: "-0.02em" },
+  whyBanner: { background: T.surface, border: `1px solid ${T.gold}40`, borderRadius: T.radiusLg, boxShadow: glow(T.gold, 0.14), padding: "16px 16px", marginTop: 12, marginBottom: 12, cursor: "pointer" },
+  whyLabel: { fontSize: 9.5, fontWeight: 700, color: T.gold, letterSpacing: "0.05em" },
   whyText: { fontSize: 13.5, fontWeight: 700, color: T.ivory, lineHeight: 1.5, marginTop: 6 },
   whyPlaceholder: { fontSize: 11.5, color: T.muted, marginTop: 6, fontWeight: 600 },
-  whyVisionCard: { flexShrink: 0, width: 130, background: T.surface, border: `1.5px solid ${T.line}`, boxShadow: "2px 2px 0px #000" },
+  whyVisionCard: { flexShrink: 0, width: 130, background: T.surface, border: `1px solid ${T.line}`, borderRadius: T.radiusMd, boxShadow: T.shadowSm, overflow: "hidden" },
   whyVisionImg: { width: "100%", height: 80, objectFit: "cover", display: "block", background: T.bg },
-  permanentQuoteCard: { background: `linear-gradient(135deg, ${T.surface}, ${T.bg})`, border: `2px solid ${T.gold || T.green}`, boxShadow: `4px 4px 0px ${T.gold || T.green}`, padding: "18px 16px", marginBottom: 16 },
+  permanentQuoteCard: { background: `linear-gradient(135deg, ${T.surface}, ${T.bg})`, border: `1px solid ${T.gold}40`, borderRadius: T.radiusLg, boxShadow: glow(T.gold, 0.16), padding: "20px 18px", marginBottom: 16 },
   permanentQuoteText: { fontSize: 13, fontStyle: "italic", color: T.ivory, lineHeight: 1.65, fontWeight: 500 },
-  smsBanner: { width: "100%", background: T.blue, border: "2px solid #000", boxShadow: "3px 3px 0px #000", padding: "10px 12px", fontSize: 11, fontWeight: 700, color: T.bg, marginBottom: 10, fontFamily: "'Space Grotesk', sans-serif" },
-  littleJeetCard: { background: T.surface, border: `2px solid ${T.blue}`, boxShadow: `4px 4px 0px ${T.blue}`, padding: "14px 14px", marginBottom: 12 },
+  smsBanner: { width: "100%", background: `${T.blue}1A`, border: `1px solid ${T.blue}40`, borderRadius: T.radiusMd, padding: "12px 14px", fontSize: 11, fontWeight: 700, color: T.blue, marginBottom: 10, fontFamily: "'Space Grotesk', sans-serif" },
+  littleJeetCard: { background: T.surface, border: `1px solid ${T.blue}40`, borderRadius: T.radiusLg, boxShadow: glow(T.blue, 0.12), padding: "16px 16px", marginBottom: 12 },
   littleJeetLabel: { fontSize: 9.5, fontWeight: 700, color: T.blue, letterSpacing: "0.05em" },
   littleJeetText: { fontSize: 12.5, color: T.ivory, lineHeight: 1.55, marginTop: 6 },
-  ruthlessBanner: { background: T.orange, border: "2.5px solid #000", boxShadow: "4px 4px 0px #000", padding: "16px 14px", marginBottom: 12 },
+  ruthlessBanner: { background: `linear-gradient(135deg, ${T.orange}, #E5502E)`, borderRadius: T.radiusLg, boxShadow: glow(T.orange, 0.25), padding: "18px 16px", marginBottom: 12 },
   ruthlessText: { fontSize: 15, fontWeight: 700, color: T.bg, lineHeight: 1.4, letterSpacing: "-0.01em" },
   quoteBanner: { textAlign: "center", padding: "10px 8px", marginBottom: 10, minHeight: 34, display: "flex", alignItems: "center", justifyContent: "center" },
-  quoteText: { fontSize: 12, fontStyle: "italic", color: T.gold || T.green, fontWeight: 600, letterSpacing: "0.01em", transition: "opacity 0.35s ease" },
+  quoteText: { fontSize: 12, fontStyle: "italic", color: T.gold, fontWeight: 600, letterSpacing: "0.01em", transition: "opacity 0.35s ease" },
   saveDot: { fontSize: 9.5, color: T.green, transition: "opacity 0.3s", height: 12, marginTop: 4, fontWeight: 700, letterSpacing: "0.05em" },
   clockRow: { fontSize: 10.5, color: T.muted, marginTop: 3, fontWeight: 600, letterSpacing: "0.03em" },
   nextCountryRow: { display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: T.green, marginTop: 3, fontWeight: 700, letterSpacing: "0.03em" },
   headerStats: { display: "flex", gap: 8 },
-  statChip: { display: "flex", alignItems: "center", gap: 5, background: T.surface, border: `1.5px solid ${T.line}`, boxShadow: "2px 2px 0px #000", padding: "6px 10px", fontSize: 11, fontWeight: 700, color: T.ivory },
+  statChip: { display: "flex", alignItems: "center", gap: 5, background: T.surfaceHi, border: `1px solid ${T.line}`, borderRadius: T.radiusPill, boxShadow: T.shadowSm, padding: "6px 12px", fontSize: 11, fontWeight: 700, color: T.ivory },
 
-  bottomNav: { position: "fixed", bottom: 0, left: 0, right: 0, background: T.surface, borderTop: `2px solid ${T.line}`, display: "flex", justifyContent: "space-around", padding: "10px 4px calc(env(safe-area-inset-bottom, 4px) + 10px) 4px", zIndex: 20 },
+  bottomNav: { position: "fixed", bottom: 0, left: 0, right: 0, background: "rgba(20,20,25,0.85)", backdropFilter: "blur(20px) saturate(150%)", WebkitBackdropFilter: "blur(20px) saturate(150%)", borderTop: `1px solid ${T.line}`, boxShadow: "0 -8px 32px rgba(0,0,0,0.35)", display: "flex", justifyContent: "space-around", padding: "10px 4px calc(env(safe-area-inset-bottom, 4px) + 10px) 4px", zIndex: 20 },
   navBtn: { background: "none", border: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, flex: 1, padding: "2px 0" },
-  navIconWrap: { width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center" },
+  navIconWrap: { width: 30, height: 30, borderRadius: T.radiusMd, display: "flex", alignItems: "center", justifyContent: "center", transition: "background 0.15s ease, box-shadow 0.15s ease" },
   navLabel: { fontSize: 9, fontWeight: 700, letterSpacing: "0.02em" },
 
   body: { padding: "18px 16px 0 16px", maxWidth: 520, margin: "0 auto" },
 
-  nextUpCard: { background: T.surface, border: `2px solid #000`, padding: "18px 16px", marginBottom: 18 },
+  nextUpCard: { background: `linear-gradient(160deg, ${T.surfaceHi}, ${T.surface})`, border: `1px solid ${T.line}`, borderRadius: T.radiusLg, boxShadow: T.shadowMd, padding: "20px 18px", marginBottom: 18 },
   nextUpLabel: { display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, letterSpacing: "0.1em", marginBottom: 8, fontWeight: 700 },
   nextUpName: { fontSize: 22, fontWeight: 700, marginBottom: 12, letterSpacing: "0.01em" },
   nextUpRow: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 },
-  nextUpDaily: { fontSize: 12.5, fontWeight: 700, marginTop: 10, borderTop: "2px solid", paddingTop: 10, letterSpacing: "0.03em" },
+  nextUpDaily: { fontSize: 12.5, fontWeight: 700, marginTop: 10, borderTop: "1.5px solid", paddingTop: 10, letterSpacing: "0.03em" },
   nextUpDate: { fontSize: 10.5, color: T.muted, marginTop: 6, fontWeight: 600 },
 
-  heroCard: { background: T.surface, border: `2px solid ${T.line}`, boxShadow: "4px 4px 0px #000", padding: "20px 18px", marginBottom: 4 },
+  heroCard: { background: `linear-gradient(160deg, ${T.surfaceHi} 0%, ${T.surface} 100%)`, border: `1px solid ${T.line}`, borderRadius: T.radiusXl, boxShadow: T.shadowLg, padding: "24px 20px", marginBottom: 4 },
   heroLabel: { fontSize: 10.5, color: T.muted, letterSpacing: "0.08em", fontWeight: 700 },
   heroNum: { fontSize: 38, fontWeight: 700, marginTop: 6, letterSpacing: "-0.01em" },
   heroSub: { fontSize: 10.5, color: T.muted, marginTop: 6, fontWeight: 600, letterSpacing: "0.02em" },
 
-  sectionLabel: { fontSize: 11, color: T.muted, letterSpacing: "0.1em", marginBottom: 12, borderBottom: `2px solid ${T.line}`, paddingBottom: 9, fontWeight: 700 },
+  sectionLabel: { fontSize: 11, color: T.muted, letterSpacing: "0.1em", marginBottom: 12, borderBottom: `1px solid ${T.line}`, paddingBottom: 10, fontWeight: 700, textTransform: "uppercase" },
   sectionHeadRow: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 22, marginBottom: 4, gap: 8 },
   emptyNote: { fontSize: 12.5, color: T.muted, padding: "16px 4px" },
 
-  addBtn: { display: "flex", alignItems: "center", gap: 6, background: T.surface, border: `1.5px solid ${T.line}`, boxShadow: "3px 3px 0px #000", color: T.green, fontSize: 11, padding: "7px 12px", fontFamily: "'Space Grotesk', sans-serif", flexShrink: 0, fontWeight: 700, letterSpacing: "0.03em" },
-  formCard: { background: T.surfaceHi, border: `2px solid ${T.line}`, padding: 16, display: "flex", flexDirection: "column", gap: 10, marginBottom: 10, marginTop: 10 },
+  addBtn: { display: "flex", alignItems: "center", gap: 6, background: T.surfaceHi, border: `1px solid ${T.line}`, borderRadius: T.radiusPill, boxShadow: T.shadowSm, color: T.green, fontSize: 11, padding: "8px 14px", fontFamily: "'Space Grotesk', sans-serif", flexShrink: 0, fontWeight: 700, letterSpacing: "0.03em" },
+  formCard: { background: T.surfaceHi, border: `1px solid ${T.line}`, borderRadius: T.radiusLg, padding: 16, display: "flex", flexDirection: "column", gap: 10, marginBottom: 10, marginTop: 10 },
   formRow: { display: "flex", gap: 10 },
-  input: { flex: 1, background: T.bg, border: `1.5px solid ${T.line}`, padding: "10px 10px", color: T.ivory, fontSize: 13 },
-  select: { background: T.bg, border: `1.5px solid ${T.line}`, padding: "10px 10px", color: T.ivory, fontSize: 13 },
-  submitBtnGreen: { display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: T.green, color: T.bg, border: "2px solid #000", boxShadow: "3px 3px 0px #000", padding: "11px", fontSize: 12.5, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif", letterSpacing: "0.04em" },
-  submitBtnOrange: { display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: T.orange, color: T.ivory, border: "2px solid #000", boxShadow: "3px 3px 0px #000", padding: "11px", fontSize: 12.5, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif", letterSpacing: "0.04em" },
-  submitBtnPurple: { display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: T.purple, color: T.ivory, border: "2px solid #000", boxShadow: "3px 3px 0px #000", padding: "11px", fontSize: 12.5, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif", letterSpacing: "0.04em" },
+  input: { flex: 1, background: T.bg, border: `1px solid ${T.line}`, borderRadius: T.radiusSm, padding: "11px 12px", color: T.ivory, fontSize: 13 },
+  select: { background: T.bg, border: `1px solid ${T.line}`, borderRadius: T.radiusSm, padding: "11px 12px", color: T.ivory, fontSize: 13 },
+  submitBtnGreen: { display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: T.green, color: T.bg, border: "none", borderRadius: T.radiusMd, boxShadow: glow(T.green, 0.30), padding: "13px", fontSize: 12.5, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif", letterSpacing: "0.04em" },
+  submitBtnOrange: { display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: T.orange, color: T.ivory, border: "none", borderRadius: T.radiusMd, boxShadow: glow(T.orange, 0.30), padding: "13px", fontSize: 12.5, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif", letterSpacing: "0.04em" },
+  submitBtnPurple: { display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: T.purple, color: T.ivory, border: "none", borderRadius: T.radiusMd, boxShadow: glow(T.purple, 0.30), padding: "13px", fontSize: 12.5, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif", letterSpacing: "0.04em" },
   quickRow: { display: "flex", gap: 8 },
-  quickBtn: { flex: 1, background: T.surface, border: "2px solid", boxShadow: "3px 3px 0px #000", padding: "12px 4px", fontSize: 10.5, fontWeight: 700, letterSpacing: "0.03em", fontFamily: "'Space Grotesk', sans-serif" },
-  miniTypeBtn: { border: "1.5px solid", padding: "6px 10px", fontSize: 10, fontWeight: 700, letterSpacing: "0.03em", fontFamily: "'Space Grotesk', sans-serif" },
-  expandPanel: { marginTop: 12, paddingTop: 10, borderTop: `2px solid ${T.line}`, cursor: "default" },
+  quickBtn: { flex: 1, background: T.surfaceHi, border: "1.5px solid", borderRadius: T.radiusMd, boxShadow: T.shadowSm, padding: "13px 4px", fontSize: 10.5, fontWeight: 700, letterSpacing: "0.03em", fontFamily: "'Space Grotesk', sans-serif" },
+  miniTypeBtn: { border: "1.5px solid", borderRadius: T.radiusPill, padding: "7px 12px", fontSize: 10, fontWeight: 700, letterSpacing: "0.03em", fontFamily: "'Space Grotesk', sans-serif" },
+  expandPanel: { marginTop: 12, paddingTop: 10, borderTop: `1px solid ${T.line}`, cursor: "default" },
   expandLabel: { fontSize: 9.5, color: T.muted, fontWeight: 700, letterSpacing: "0.06em", marginBottom: 6 },
-  timelineBox: { marginBottom: 12, paddingBottom: 12, borderBottom: `2px solid ${T.line}` },
+  timelineBox: { marginBottom: 12, paddingBottom: 12, borderBottom: `1px solid ${T.line}` },
   countdownRow: { display: "flex", gap: 8 },
-  countdownUnit: { flex: 1, background: T.bg, border: `1.5px solid ${T.line}`, display: "flex", flexDirection: "column", alignItems: "center", padding: "8px 4px" },
+  countdownUnit: { flex: 1, background: T.bg, border: `1px solid ${T.line}`, borderRadius: T.radiusSm, display: "flex", flexDirection: "column", alignItems: "center", padding: "10px 4px" },
   countdownNum: { fontSize: 18, fontWeight: 700, color: T.ivory },
   countdownLabel: { fontSize: 8, color: T.muted, fontWeight: 700, letterSpacing: "0.05em", marginTop: 2 },
   netWorthFooter: { padding: "14px 4px", marginTop: 24 },
   netWorthFooterLabel: { fontSize: 10, color: T.muted, letterSpacing: "0.08em", fontWeight: 700 },
   netWorthFooterNum: { fontSize: 13, fontWeight: 700 },
-  aiTipBtn: { background: T.bg, border: `1.5px solid ${T.purple}`, boxShadow: "2px 2px 0px #000", color: T.purple, fontSize: 10.5, fontWeight: 700, padding: "8px 12px", letterSpacing: "0.03em", fontFamily: "'Space Grotesk', sans-serif", width: "100%" },
-  aiTipResult: { background: T.bg, border: `1.5px solid ${T.purple}`, padding: 10, fontSize: 11.5, color: T.ivory, lineHeight: 1.5, marginTop: 4 },
+  aiTipBtn: { background: `${T.purple}14`, border: `1px solid ${T.purple}40`, borderRadius: T.radiusMd, color: T.purple, fontSize: 10.5, fontWeight: 700, padding: "9px 12px", letterSpacing: "0.03em", fontFamily: "'Space Grotesk', sans-serif", width: "100%" },
+  aiTipResult: { background: T.surfaceHi, border: `1px solid ${T.line}`, borderRadius: T.radiusMd, padding: 12, fontSize: 11.5, color: T.ivory, lineHeight: 1.5, marginTop: 4 },
 
   noteOverlay: {
     position: "fixed", inset: 0,
@@ -6450,7 +6470,7 @@ const S = {
   checkboxRow: { display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: T.muted, fontWeight: 600, letterSpacing: "0.02em" },
 
   ledger: { marginTop: 4 },
-  ledgerRow: { display: "flex", alignItems: "center", gap: 8, padding: "12px 6px", borderBottom: `1.5px solid ${T.line}` },
+  ledgerRow: { display: "flex", alignItems: "center", gap: 8, padding: "12px 6px", borderBottom: `1px solid ${T.line}` },
   ledgerDate: { fontSize: 10, color: T.muted, width: 38, flexShrink: 0, fontWeight: 700 },
   ledgerMain: { flex: 1, minWidth: 0 },
   ledgerCategory: { fontSize: 13, color: T.ivory, fontWeight: 600 },
@@ -6458,69 +6478,71 @@ const S = {
   ledgerAmt: { fontSize: 14, fontWeight: 700, flexShrink: 0 },
   deleteBtn: { background: "none", border: "none", padding: 4, flexShrink: 0, opacity: 0.6 },
   editBtn: { background: "none", border: "none", padding: 4, flexShrink: 0, opacity: 0.6 },
-  smallToggle: { background: T.bg, border: `1.5px solid ${T.line}`, padding: 4, flexShrink: 0 },
-  fineTag: { fontSize: 9, color: T.orange, border: `1.5px solid ${T.orange}`, padding: "1px 5px", marginLeft: 6, fontWeight: 700, letterSpacing: "0.03em" },
+  smallToggle: { background: T.surfaceHi, border: `1px solid ${T.line}`, borderRadius: T.radiusSm, padding: 5, flexShrink: 0 },
+  fineTag: { fontSize: 9, color: T.orange, border: `1px solid ${T.orange}55`, borderRadius: T.radiusPill, padding: "2px 7px", marginLeft: 6, fontWeight: 700, letterSpacing: "0.03em" },
   correctionLink: { background: "none", border: "none", color: T.muted, fontSize: 10, textDecoration: "underline", fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, letterSpacing: "0.03em" },
-  daysLeftChip: { fontSize: 9.5, fontWeight: 700, border: "1.5px solid", padding: "3px 6px", letterSpacing: "0.02em" },
+  daysLeftChip: { fontSize: 9.5, fontWeight: 700, border: "1.5px solid", borderRadius: T.radiusPill, padding: "3px 8px", letterSpacing: "0.02em" },
 
   photoUploadBtn: {
     display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-    border: `1.5px dashed ${T.line}`, padding: "14px 8px", fontSize: 10.5, fontWeight: 700,
+    border: `1.5px dashed ${T.line}`, borderRadius: T.radiusMd, padding: "16px 8px", fontSize: 10.5, fontWeight: 700,
     color: T.muted, letterSpacing: "0.03em", marginBottom: 10, cursor: "pointer",
   },
   tiltCardWrap: { position: "relative", marginBottom: 10, height: 150, perspective: "700px" },
   tiltCardInner: {
-    position: "relative", width: "100%", height: "100%", borderRadius: 4, overflow: "hidden",
-    border: `2px solid #000`, boxShadow: "4px 6px 14px rgba(0,0,0,0.5)",
+    position: "relative", width: "100%", height: "100%", borderRadius: T.radiusLg, overflow: "hidden",
+    border: `1px solid ${T.line}`, boxShadow: T.shadowMd,
     transition: "transform 0.15s ease-out",
   },
   tiltCardImg: { width: "100%", height: "100%", objectFit: "cover", display: "block", pointerEvents: "none" },
   tiltCardShine: { position: "absolute", inset: 0, pointerEvents: "none" },
-  tiltRemoveBtn: { position: "absolute", top: 6, right: 6, background: "rgba(13,13,13,0.75)", border: "1.5px solid #000", padding: 5, zIndex: 5 },
+  tiltRemoveBtn: { position: "absolute", top: 8, right: 8, background: "rgba(10,10,13,0.75)", backdropFilter: "blur(8px)", border: `1px solid ${T.line}`, borderRadius: T.radiusPill, padding: 6, zIndex: 5 },
 
-  heatBox: { flex: 1, background: T.surface, border: `1.5px solid ${T.line}`, padding: 12 },
-  bossBox: { background: T.surface, border: `2px solid ${T.line}`, padding: 14, marginTop: 10 },
+  heatBox: { flex: 1, background: T.surfaceHi, border: `1px solid ${T.line}`, borderRadius: T.radiusMd, padding: 12 },
+  bossBox: { background: T.surface, border: `1px solid ${T.line}`, borderRadius: T.radiusLg, boxShadow: T.shadowSm, padding: 16, marginTop: 10 },
   bossHeader: { display: "flex", justifyContent: "space-between", alignItems: "center" },
   bossName: { fontSize: 15, fontWeight: 700, color: T.ivory, marginTop: 6, letterSpacing: "0.02em" },
-  bossHpTrack: { height: 12, background: T.line, marginTop: 8, border: "1.5px solid #000" },
-  bossHpFill: { height: "100%", transition: "width 0.4s ease" },
+  bossHpTrack: { height: 12, background: T.line, borderRadius: T.radiusPill, marginTop: 8, overflow: "hidden" },
+  bossHpFill: { height: "100%", borderRadius: T.radiusPill, transition: "width 0.4s ease" },
 
   trophyGrid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 },
-  trophyCell: { background: T.surface, border: `1.5px solid ${T.line}`, padding: "10px 4px", display: "flex", flexDirection: "column", alignItems: "center" },
+  trophyCell: { background: T.surfaceHi, border: `1px solid ${T.line}`, borderRadius: T.radiusMd, padding: "12px 4px", display: "flex", flexDirection: "column", alignItems: "center" },
 
   calGridHeader: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginTop: 14, marginBottom: 4 },
   calDayLabel: { fontSize: 9, color: T.muted, fontWeight: 700, textAlign: "center" },
   calGrid: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 3 },
-  calCell: { aspectRatio: "1", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: T.bg, border: `1px solid ${T.line}` },
+  calCell: { aspectRatio: "1", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: T.surfaceHi, border: `1px solid ${T.line}`, borderRadius: T.radiusSm },
 
-  lockIconBtn: { background: T.surface, border: `1.5px solid ${T.line}`, padding: "6px 7px", display: "flex", alignItems: "center", justifyContent: "center" },
+  lockIconBtn: { background: T.surfaceHi, border: `1px solid ${T.line}`, borderRadius: T.radiusSm, padding: "7px 8px", display: "flex", alignItems: "center", justifyContent: "center" },
   lockScreenOverlay: { position: "fixed", inset: 0, background: T.bg, zIndex: 300, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: T.ivory },
   pinDot: { width: 14, height: 14, borderRadius: "50%", border: "2px solid", transition: "background 0.15s ease" },
-  pinKey: { background: T.surface, border: `1.5px solid ${T.line}`, color: T.ivory, fontSize: 18, fontWeight: 700, padding: "16px 0", fontFamily: "'Space Grotesk', sans-serif" },
-  reportBtn: { display: "flex", justifyContent: "space-between", alignItems: "center", background: T.surface, border: `1.5px solid ${T.purple}`, boxShadow: "2px 2px 0px #000", padding: "12px 14px", textAlign: "left" },
-  exportBtn: { display: "flex", alignItems: "center", gap: 8, background: T.surface, border: `1.5px solid ${T.line}`, boxShadow: "2px 2px 0px #000", padding: "12px 14px", fontSize: 11.5, fontWeight: 700, color: T.ivory, letterSpacing: "0.02em", fontFamily: "'Space Grotesk', sans-serif" },
+  pinKey: { background: T.surfaceHi, border: `1px solid ${T.line}`, borderRadius: T.radiusMd, color: T.ivory, fontSize: 18, fontWeight: 700, padding: "18px 0", fontFamily: "'Space Grotesk', sans-serif" },
+  reportBtn: { display: "flex", justifyContent: "space-between", alignItems: "center", background: `${T.purple}14`, border: `1px solid ${T.purple}40`, borderRadius: T.radiusMd, padding: "13px 15px", textAlign: "left" },
+  exportBtn: { display: "flex", alignItems: "center", gap: 8, background: T.surfaceHi, border: `1px solid ${T.line}`, borderRadius: T.radiusMd, boxShadow: T.shadowSm, padding: "13px 15px", fontSize: 11.5, fontWeight: 700, color: T.ivory, letterSpacing: "0.02em", fontFamily: "'Space Grotesk', sans-serif" },
 
   fabBtn: {
-    position: "fixed", right: 16, bottom: 92, width: 52, height: 52,
-    background: T.green, border: "2px solid #000", boxShadow: "3px 3px 0px #000",
+    position: "fixed", right: 16, bottom: 92, width: 56, height: 56,
+    background: T.green, border: "none", borderRadius: "50%", boxShadow: glow(T.green, 0.4),
     display: "flex", alignItems: "center", justifyContent: "center", zIndex: 150,
+    transition: "transform 0.15s ease",
   },
   voiceFab: {
-    position: "fixed", right: 16, bottom: 154, width: 52, height: 52,
-    background: T.purple, border: "2px solid #000", boxShadow: "3px 3px 0px #000",
+    position: "fixed", right: 16, bottom: 158, width: 56, height: 56,
+    background: T.purple, border: "none", borderRadius: "50%", boxShadow: glow(T.purple, 0.4),
     display: "flex", alignItems: "center", justifyContent: "center", zIndex: 150,
+    transition: "transform 0.15s ease",
   },
-  calcOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 210, display: "flex", alignItems: "flex-end", justifyContent: "center" },
-  calcModal: { width: "100%", maxWidth: 420, background: T.surface, borderTop: `2px solid ${T.line}`, padding: "16px 16px calc(env(safe-area-inset-bottom,16px) + 16px) 16px" },
+  calcOverlay: { position: "fixed", inset: 0, background: "rgba(5,5,7,0.7)", backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)", zIndex: 210, display: "flex", alignItems: "flex-end", justifyContent: "center" },
+  calcModal: { width: "100%", maxWidth: 420, background: T.surface, borderTop: `1px solid ${T.line}`, borderRadius: "24px 24px 0 0", boxShadow: T.shadowLg, padding: "20px 16px calc(env(safe-area-inset-bottom,16px) + 16px) 16px" },
   calcHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10 },
-  calcCloseBtn: { background: T.bg, border: `1.5px solid ${T.line}`, padding: 6, flexShrink: 0 },
-  calcDisplay: { fontSize: 34, fontWeight: 700, color: T.ivory, textAlign: "right", padding: "18px 10px", background: T.bg, border: `2px solid ${T.line}`, marginBottom: 10, minHeight: 30 },
+  calcCloseBtn: { background: T.surfaceHi, border: `1px solid ${T.line}`, borderRadius: T.radiusPill, padding: 7, flexShrink: 0 },
+  calcDisplay: { fontSize: 34, fontWeight: 700, color: T.ivory, textAlign: "right", padding: "20px 14px", background: T.bg, border: `1px solid ${T.line}`, borderRadius: T.radiusMd, marginBottom: 10, minHeight: 30 },
   calcSubDisplay: { fontSize: 13, color: T.muted, marginBottom: 4 },
   calcGrid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 },
-  calcKey: { background: T.bg, border: `1.5px solid ${T.line}`, color: T.ivory, fontSize: 18, fontWeight: 700, padding: "16px 0", fontFamily: "'Space Grotesk', sans-serif" },
-  calcKeyMuted: { background: T.surfaceHi, border: `1.5px solid ${T.line}`, color: T.muted, fontSize: 15, fontWeight: 700, padding: "16px 0", fontFamily: "'Space Grotesk', sans-serif", display: "flex", alignItems: "center", justifyContent: "center" },
-  calcKeyOp: { background: T.purple, border: "2px solid #000", color: T.ivory, fontSize: 18, fontWeight: 700, padding: "16px 0", fontFamily: "'Space Grotesk', sans-serif" },
-  calcKeyEquals: { background: T.green, border: "2px solid #000", color: T.bg, fontSize: 18, fontWeight: 700, padding: "16px 0", fontFamily: "'Space Grotesk', sans-serif" },
+  calcKey: { background: T.surfaceHi, border: `1px solid ${T.line}`, borderRadius: T.radiusMd, color: T.ivory, fontSize: 18, fontWeight: 700, padding: "17px 0", fontFamily: "'Space Grotesk', sans-serif" },
+  calcKeyMuted: { background: T.surface, border: `1px solid ${T.line}`, borderRadius: T.radiusMd, color: T.muted, fontSize: 15, fontWeight: 700, padding: "17px 0", fontFamily: "'Space Grotesk', sans-serif", display: "flex", alignItems: "center", justifyContent: "center" },
+  calcKeyOp: { background: T.purple, border: "none", borderRadius: T.radiusMd, color: T.ivory, fontSize: 18, fontWeight: 700, padding: "17px 0", fontFamily: "'Space Grotesk', sans-serif" },
+  calcKeyEquals: { background: T.green, border: "none", borderRadius: T.radiusMd, color: T.bg, fontSize: 18, fontWeight: 700, padding: "17px 0", fontFamily: "'Space Grotesk', sans-serif" },
 
   budgetName: { fontSize: 12.5, color: T.ivory, fontWeight: 700, letterSpacing: "0.01em" },
   budgetTop: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
@@ -6528,35 +6550,35 @@ const S = {
   pinBtn: { background: "none", border: "none", padding: 2, color: T.muted },
 
   pctRow: { display: "flex", alignItems: "center", gap: 8 },
-  pctDot: { width: 9, height: 9, flexShrink: 0 },
+  pctDot: { width: 9, height: 9, borderRadius: 3, flexShrink: 0 },
   pctName: { flex: 1, fontSize: 12.5, color: T.ivory, fontWeight: 600 },
-  pctInput: { width: 52, background: T.bg, border: `1.5px solid ${T.line}`, padding: "6px 6px", color: T.ivory, fontSize: 12.5, textAlign: "right" },
+  pctInput: { width: 56, background: T.bg, border: `1px solid ${T.line}`, borderRadius: T.radiusSm, padding: "7px 8px", color: T.ivory, fontSize: 12.5, textAlign: "right" },
 
-  fundCard: { background: T.surface, border: `2px solid ${T.line}`, padding: 14 },
+  fundCard: { background: T.surface, border: `1px solid ${T.line}`, borderRadius: T.radiusLg, boxShadow: T.shadowSm, padding: 16 },
   fundTop: { display: "flex", justifyContent: "space-between", alignItems: "center" },
   fundBalance: { fontSize: 25, fontWeight: 700, marginTop: 8, letterSpacing: "-0.01em" },
 
-  historyCard: { background: T.surface, border: `2px solid ${T.line}`, padding: 14 },
+  historyCard: { background: T.surface, border: `1px solid ${T.line}`, borderRadius: T.radiusLg, boxShadow: T.shadowSm, padding: 16 },
   historyTop: { display: "flex", justifyContent: "space-between", alignItems: "center" },
   historyAllocRow: { display: "flex", flexWrap: "wrap", gap: 9, marginTop: 10 },
 
-  goalCard: { background: T.surface, border: `2px solid ${T.line}`, padding: 15 },
-  goalCalc: { display: "flex", flexDirection: "column", gap: 4, marginTop: 10, fontSize: 11, color: T.muted, borderTop: `2px solid ${T.line}`, paddingTop: 10 },
-  progressTrack: { height: 8, background: T.line, overflow: "hidden" },
-  progressFill: { height: "100%", transition: "width 0.3s" },
+  goalCard: { background: T.surface, border: `1px solid ${T.line}`, borderRadius: T.radiusLg, boxShadow: T.shadowSm, padding: 17 },
+  goalCalc: { display: "flex", flexDirection: "column", gap: 4, marginTop: 10, fontSize: 11, color: T.muted, borderTop: `1px solid ${T.line}`, paddingTop: 10 },
+  progressTrack: { height: 8, background: T.line, borderRadius: T.radiusPill, overflow: "hidden" },
+  progressFill: { height: "100%", borderRadius: T.radiusPill, transition: "width 0.3s" },
 
-  miniGoalCard: { background: T.surface, border: `1.5px solid ${T.line}`, boxShadow: "2px 2px 0px #000", padding: 13 },
+  miniGoalCard: { background: T.surface, border: `1px solid ${T.line}`, borderRadius: T.radiusMd, boxShadow: T.shadowSm, padding: 14 },
   miniGoalTop: { display: "flex", justifyContent: "space-between", alignItems: "center" },
   miniGoalName: { fontSize: 12.5, color: T.ivory, fontWeight: 700 },
 
   statGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 },
-  statBox: { background: T.surface, border: `1.5px solid ${T.line}`, boxShadow: "3px 3px 0px #000", padding: 14 },
+  statBox: { background: T.surfaceHi, border: `1px solid ${T.line}`, borderRadius: T.radiusMd, boxShadow: T.shadowSm, padding: 15 },
   statBoxLabel: { fontSize: 9.5, color: T.muted, fontWeight: 700, letterSpacing: "0.04em" },
   statBoxNum: { fontSize: 20, fontWeight: 700, marginTop: 6 },
 
-  toggleWrap: { display: "flex", border: `2px solid ${T.line}`, overflow: "hidden", marginBottom: 14 },
-  toggleBtn: { display: "flex", alignItems: "center", justifyContent: "center", padding: "11px 16px", background: "none", border: "none", color: T.muted, fontSize: 11.5, fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, letterSpacing: "0.03em" },
+  toggleWrap: { display: "flex", background: T.surfaceHi, border: `1px solid ${T.line}`, borderRadius: T.radiusPill, overflow: "hidden", marginBottom: 14 },
+  toggleBtn: { display: "flex", alignItems: "center", justifyContent: "center", padding: "11px 16px", background: "none", border: "none", color: T.muted, fontSize: 11.5, fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, letterSpacing: "0.03em", transition: "background 0.15s ease, color 0.15s ease" },
 
-  toast: { position: "fixed", bottom: 88, left: "50%", transform: "translateX(-50%)", background: T.surfaceHi, border: `2px solid ${T.green}`, boxShadow: "3px 3px 0px #000", color: T.green, fontSize: 11.5, fontWeight: 700, padding: "9px 16px", zIndex: 30, letterSpacing: "0.03em" },
-  conflictToast: { position: "fixed", bottom: 140, left: "50%", transform: "translateX(-50%)", background: T.surfaceHi, border: `2px solid ${T.orange}`, boxShadow: "3px 3px 0px #000", color: T.orange, fontSize: 11, fontWeight: 700, padding: "9px 16px", zIndex: 31, letterSpacing: "0.02em", maxWidth: "88%", textAlign: "center" },
+  toast: { position: "fixed", bottom: 92, left: "50%", transform: "translateX(-50%)", background: T.surfaceHi, border: `1px solid ${T.green}55`, borderRadius: T.radiusPill, boxShadow: glow(T.green, 0.25), color: T.green, fontSize: 11.5, fontWeight: 700, padding: "10px 18px", zIndex: 30, letterSpacing: "0.03em" },
+  conflictToast: { position: "fixed", bottom: 144, left: "50%", transform: "translateX(-50%)", background: T.surfaceHi, border: `1px solid ${T.orange}55`, borderRadius: T.radiusPill, boxShadow: glow(T.orange, 0.25), color: T.orange, fontSize: 11, fontWeight: 700, padding: "10px 18px", zIndex: 31, letterSpacing: "0.02em", maxWidth: "88%", textAlign: "center" },
 };
