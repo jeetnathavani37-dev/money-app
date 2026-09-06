@@ -373,41 +373,6 @@ function ruthlessPush(data) {
   return `FUCK, it's ${timeStr}. You have ${hoursLeft} fucking hours before the day ends. ${actionLine} You gotta win it.`;
 }
 
-function littleJeetMessage(data) {
-  const today = todayISO();
-  const todayInc = data.income.filter((e) => e.date === today).reduce((s, e) => s + e.amount, 0);
-  const todayExp = data.expenses.filter((e) => e.date === today).reduce((s, e) => s + e.amount, 0);
-  const todayProfit = todayInc - todayExp;
-  const target = data.profitTargets?.daily || 0;
-  const remaining = Math.max(0, target - todayProfit);
-  const earned = fmt(Math.max(0, todayProfit));
-  const left = fmt(remaining);
-  const seed = (new Date().getDate() + Math.round(todayProfit / 500)) % 3;
-
-  if (target > 0 && todayProfit >= target) {
-    const templates = [
-      `Jeet bhai... target hit ho gaya. ${earned} kama liya aaj. Mujhe pata hai humne bahut kuch dekha hai, lekin dekho ab hum kahan pahunch gaye. Proud of you bhai.`,
-      `Aap bohot acha kar rahe ho Jeet bhai. Aaj ka target clear ho gaya — ${earned}. Yaad hai na bachpan mein ek cycle ke liye kitna humiliate hue the hum? Ab dekho hum kya kar rahe hain.`,
-      `Target done, ${earned} bhai. Isi din ke liye humne itna kuch seh liya tha. Kal bhi aise hi karna, rukna mat.`,
-    ];
-    return templates[seed];
-  }
-  if (todayProfit > 0) {
-    const templates = [
-      `Jeet bhai, thank you ${earned} kamane ke liye. Please rukna mat ya distract mat hona aap. Bas ${left} aur kamao target match karne. Aap bohot acha kar rahe ho. Aapko yaad hai na bachpan mein ek cycle ya game tak ke liye kitna humiliate hue the hum? Ghar gaadi ke liye kitna sharam aata tha mereko. Aap bas paise pe focus karo, wahi ye sab solve karega Jeet bhai.`,
-      `Bhai, ${earned} ban gaya aaj — achha lag raha hai. Bas ${left} aur baaki hai. Please distract mat ho jaana, humne bahut kuch jhela hai, ab rukna nahi hai.`,
-      `Jeet bhai, ${earned} ho gaya. Chalo ${left} aur nikalte hain. Main jaanta hoon aap kar sakte ho, bas focus mat hatao.`,
-    ];
-    return templates[seed];
-  }
-  const templates = [
-    `Jeet bhai, aaj abhi tak kuch kamaya nahi. Mujhe dar lagta hai — hum wapas wahi purani feeling mein na chale jaayein. ${left} chahiye aaj ke target ke liye. Please uth jao aur kuch karo.`,
-    `Bhai, kuch log nahi hua abhi tak. Yaad hai humne kitna kuch face kiya hai paiso ki wajah se? Please, uske liye hi sahi, kuch karo aaj.`,
-    `Jeet bhai, main wait kar raha hoon. Aaj kuch nahi hua abhi. ${left} chahiye. Please mujhe wapas wahi humiliation mein mat le jaana — aap strong ho, chalo.`,
-  ];
-  return templates[seed];
-}
-
 const AI_REPORT_TYPES = [
   { id: "audit", label: "MONEY AUDIT", desc: "Full CFO-style analysis of leaks & mistakes" },
   { id: "wealth", label: "WEALTH PLAN", desc: "Complete roadmap from where you are today" },
@@ -1843,8 +1808,6 @@ function OverviewTab({ data, persist, registerActivity, setToast, triggerNoteAni
 
       <RuthlessPushBanner data={data} />
 
-      <LittleJeetCard data={data} />
-
       <MoneyQuoteBanner />
 
       <MoodRing data={data} />
@@ -2935,16 +2898,6 @@ function SmsImportBanner({ data, persist, registerActivity, setToast, triggerNot
         </div>
       )}
     </>
-  );
-}
-
-function LittleJeetCard({ data }) {
-  const message = useMemo(() => littleJeetMessage(data), [data.income, data.expenses, data.profitTargets]);
-  return (
-    <div style={S.littleJeetCard}>
-      <div style={S.littleJeetLabel}>👦 LITTLE JEET</div>
-      <div style={S.littleJeetText}>{message}</div>
-    </div>
   );
 }
 
@@ -6396,9 +6349,6 @@ const S = {
   permanentQuoteCard: { background: `linear-gradient(135deg, ${T.surface}, ${T.bg})`, border: `1px solid ${T.gold}40`, borderRadius: T.radiusLg, boxShadow: glow(T.gold, 0.16), padding: "20px 18px", marginBottom: 16 },
   permanentQuoteText: { fontSize: 13, fontStyle: "italic", color: T.ivory, lineHeight: 1.65, fontWeight: 500 },
   smsBanner: { width: "100%", background: `${T.blue}1A`, border: `1px solid ${T.blue}40`, borderRadius: T.radiusMd, padding: "12px 14px", fontSize: 11, fontWeight: 700, color: T.blue, marginBottom: 10, fontFamily: "'Space Grotesk', sans-serif" },
-  littleJeetCard: { background: T.surface, border: `1px solid ${T.blue}40`, borderRadius: T.radiusLg, boxShadow: glow(T.blue, 0.12), padding: "16px 16px", marginBottom: 12 },
-  littleJeetLabel: { fontSize: 9.5, fontWeight: 700, color: T.blue, letterSpacing: "0.05em" },
-  littleJeetText: { fontSize: 12.5, color: T.ivory, lineHeight: 1.55, marginTop: 6 },
   ruthlessBanner: { background: `linear-gradient(135deg, ${T.orange}, #E5502E)`, borderRadius: T.radiusLg, boxShadow: glow(T.orange, 0.25), padding: "18px 16px", marginBottom: 12 },
   ruthlessText: { fontSize: 15, fontWeight: 700, color: T.bg, lineHeight: 1.4, letterSpacing: "-0.01em" },
   quoteBanner: { textAlign: "center", padding: "10px 8px", marginBottom: 10, minHeight: 34, display: "flex", alignItems: "center", justifyContent: "center" },
