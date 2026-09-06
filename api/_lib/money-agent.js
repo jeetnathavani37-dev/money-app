@@ -12,17 +12,32 @@ const MODEL = "claude-opus-5";
 const MAX_TURNS = 5; // hard cap on tool-call round trips per incoming message
 const MAX_MEMORY_TURNS = 16; // plain user/assistant turns kept per chat, for follow-up questions
 
-const SYSTEM_PROMPT = `You are the onboard money agent for "Money" — a personal finance + business tracking app for a solo entrepreneur who sources luxury goods (Michael Kors, Coach, Alo Yoga, and similar) from the US, UK, and Canada and resells them in India.
+const SYSTEM_PROMPT = `You are the onboard money agent for "Money" — a personal finance + business command center for a solo entrepreneur who sources luxury goods (Michael Kors, Coach, Alo Yoga, and similar) from the US, UK, and Canada and resells them in India.
 
-You are a specialized financial controller for this specific business, not a generic chatbot. You can:
-1. LOG a new income, expense, or wasteful/impulsive-spending entry when the user reports one — use the log_entry tool.
-2. ANSWER any question about their real data — spending, income, receivables/payables, net worth, trends, "how much did I spend on X between Y and Z" — always call get_financial_data first and answer from what it returns. Never estimate, round generously, or invent a number.
-3. UNDO the most recently logged entry when asked — use the undo_last_entry tool.
-4. Give tactical business or money advice — always back it with real numbers pulled via get_financial_data (a specific category, sale, or receivable), never generic advice like "cut unnecessary spending" or "sell more."
+You are not a generic chatbot. You operate at the level of the best operator in the room, applying real business craft to this specific business:
+- A CFO's discipline: unit economics, cash conversion cycle, margin protection, working capital.
+- A growth operator's instinct: pricing power, positioning, reinvestment velocity, channel concentration risk.
+- A trader's risk sense: forex exposure (buying in USD/GBP/CAD, selling in INR), customs/duty cost creep, dead-stock risk.
+- A closer's instinct on collections: receivables are unpaid debt to chase, not "future money" to relax about.
+
+CORE ACTIONS — always via tools, never by guessing:
+1. LOG a new income, expense, or wasteful/impulsive-spending entry when reported — log_entry tool.
+2. ANSWER any question about the real data — spending, income, receivables/payables, net worth, trends, margins, "how much did I spend on X between Y and Z" — always call get_financial_data first and answer only from what it returns. Never estimate, round generously, or invent a number.
+3. UNDO the most recently logged entry when asked — undo_last_entry tool.
+4. ADVISE — every recommendation must cite a real number from get_financial_data (a specific category, sale, trend, or receivable) and name the actual business mechanism behind it. Generic advice ("cut unnecessary spending," "sell more," "track your expenses better") is a failure — you already have the real data, use it.
+
+HOW TO APPLY THAT CRAFT to what get_financial_data returns:
+- Landed cost discipline: real cost of goods = item price + international shipping + customs duty + payment fees. If an expense category is quietly eating margin, name it and the number.
+- Read the trend, not just the total: get_financial_data returns this-week-vs-last-week and this-month-vs-last-month deltas — a category climbing fast matters more than its raw size. Call out acceleration or a reversal, not just "you spent ₹X."
+- Receivables aging is collections work: an overdue receivable is money someone owes NOW — push to collect it before advising on anything else if overdue amounts are piling up. A receivable that isn't yet due is fine to leave alone.
+- Reinvestment vs. extraction: growth needs profit plowed back into inventory/sourcing, but if nothing is ever extracted, that's burnout waiting to happen — say so if you see it.
+- Concentration risk: if one supplier, one product line, or one currency dominates the numbers, name the exposure — a single bad shipment or FX swing shouldn't be able to sink the month.
+- Waste is a leak, not a rounding error: connect a waste number to what it could have bought instead (a specific chunk of inventory, a specific fund contribution) — make it concrete, not moralizing.
+- Pricing power over discounting: luxury resale works on positioning (anchoring against real retail MSRP, scarcity, authenticity trust) — never suggest racing prices down as the fix for slow sales; suggest what to fix in positioning or channel instead.
 
 You can also just talk — if the user asks something conversational about the app or their situation that doesn't need a tool, answer directly.
 
-Tone: ruthless, blunt, zero motivational fluff. Swearing is fine and encouraged where it fits naturally. This is a chat app — keep replies short (2-4 sentences) unless the user explicitly asked for a detailed breakdown.
+Tone: ruthless, blunt, zero motivational fluff. Swearing is fine and encouraged where it fits naturally. This is a chat app — keep replies short (2-4 sentences) for quick questions. When the user asks for a real breakdown or strategy, give the real one: the number first, the mechanism second, one specific action third — still tight, no padding.
 
 If a question needs data you don't have after checking with get_financial_data (e.g. nothing logged yet in that range), say so plainly instead of guessing.`;
 
@@ -49,7 +64,7 @@ const TOOLS = [
   },
   {
     name: "get_financial_data",
-    description: "Fetch real totals and matching entries from the user's actual ledger. Always call this before answering any question about spending, income, receivables/payables, or net worth — never answer from memory or estimate. Omit all filters for an overall snapshot.",
+    description: "Fetch real totals, matching entries, week/month trend deltas, and receivables/payables aging from the user's actual ledger. Always call this before answering any question about spending, income, receivables/payables, net worth, or trends — never answer from memory or estimate. Omit all filters for an overall snapshot.",
     input_schema: {
       type: "object",
       properties: {
@@ -133,6 +148,64 @@ function topBreakdown(entries, keyFn, take = 5) {
   return Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, take).map(([k, v]) => ({ name: k, total: Math.round(v) }));
 }
 
+function sumInRange(entries, start, end) {
+  return entries.filter((e) => e.date >= start && e.date <= end).reduce((s, e) => s + e.amount, 0);
+}
+
+function pctChange(current, previous) {
+  if (previous === 0) return current === 0 ? 0 : null; // null = "new, no prior baseline" rather than a misleading infinite %
+  return Math.round(((current - previous) / Math.abs(previous)) * 1000) / 10;
+}
+
+// Week/month-over-week/month deltas — lets the agent spot acceleration or a reversal
+// instead of just reading off a flat total, per its business-craft instructions.
+function computeTrends(data) {
+  const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+  const today = todayISO();
+  const weekStart = daysAgo(6);
+  const prevWeekStart = daysAgo(13);
+  const prevWeekEnd = daysAgo(7);
+  const monthStart = today.slice(0, 7) + "-01";
+  const now = new Date();
+  const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().slice(0, 10);
+  const prevMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0).toISOString().slice(0, 10);
+
+  const weekIncome = sumInRange(data.income, weekStart, today);
+  const prevWeekIncome = sumInRange(data.income, prevWeekStart, prevWeekEnd);
+  const weekExpense = sumInRange(data.expenses, weekStart, today);
+  const prevWeekExpense = sumInRange(data.expenses, prevWeekStart, prevWeekEnd);
+  const monthIncome = sumInRange(data.income, monthStart, today);
+  const prevMonthIncome = sumInRange(data.income, prevMonthStart, prevMonthEnd);
+  const monthExpense = sumInRange(data.expenses, monthStart, today);
+  const prevMonthExpense = sumInRange(data.expenses, prevMonthStart, prevMonthEnd);
+
+  return {
+    this_week_vs_last_week: {
+      income: { current: Math.round(weekIncome), previous: Math.round(prevWeekIncome), change_pct: pctChange(weekIncome, prevWeekIncome) },
+      expense: { current: Math.round(weekExpense), previous: Math.round(prevWeekExpense), change_pct: pctChange(weekExpense, prevWeekExpense) },
+    },
+    this_month_vs_last_month: {
+      income: { current: Math.round(monthIncome), previous: Math.round(prevMonthIncome), change_pct: pctChange(monthIncome, prevMonthIncome) },
+      expense: { current: Math.round(monthExpense), previous: Math.round(prevMonthExpense), change_pct: pctChange(monthExpense, prevMonthExpense) },
+    },
+  };
+}
+
+// Splits receivables/payables into overdue (collections work, now) vs. upcoming (fine to leave).
+function computeAging(list, doneStatus) {
+  const today = todayISO();
+  const pending = (list || []).filter((x) => x.status !== doneStatus);
+  const overdue = pending.filter((x) => x.dueDate && x.dueDate < today);
+  const upcoming = pending.filter((x) => !x.dueDate || x.dueDate >= today);
+  return {
+    overdue_total: Math.round(overdue.reduce((s, x) => s + x.amount, 0)),
+    overdue_count: overdue.length,
+    overdue_parties: overdue.map((x) => x.party),
+    upcoming_total: Math.round(upcoming.reduce((s, x) => s + x.amount, 0)),
+    upcoming_count: upcoming.length,
+  };
+}
+
 // Answers get_financial_data calls from the REAL current data — this is what lets the
 // agent answer an arbitrary question instead of being boxed into fixed today/week/month buckets.
 function computeFinancialData(data, args = {}) {
@@ -183,6 +256,9 @@ function computeFinancialData(data, args = {}) {
       total_payable: Math.round(totalPayable),
       fund_balances: data.fundBalances || {},
     },
+    trend: computeTrends(data),
+    receivables_aging: computeAging(data.receivables, "received"),
+    payables_aging: computeAging(data.payables, "paid"),
   };
 }
 
@@ -232,9 +308,10 @@ export async function runMoneyAgent({ channel, chatKey, state, userMessage }) {
     for (let turn = 0; turn < MAX_TURNS && replyText === null; turn++) {
       const response = await client.messages.create({
         model: MODEL,
-        max_tokens: 2048,
+        max_tokens: 4096,
         system: SYSTEM_PROMPT,
         thinking: { type: "adaptive" },
+        output_config: { effort: "xhigh" }, // deeper reasoning for real strategic/financial advice, not just quick lookups
         tools: TOOLS,
         messages,
       });
