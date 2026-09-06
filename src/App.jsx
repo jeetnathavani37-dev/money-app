@@ -211,6 +211,21 @@ function buildReportText(data) {
   return lines.join("\n");
 }
 
+function buildReceiptText(entry) {
+  const lines = [
+    `RECEIPT`,
+    `Date: ${fmtDate(entry.date)}`,
+    entry.customerName ? `Customer: ${entry.customerName}` : null,
+    entry.itemName ? `Item: ${entry.itemName}${entry.qty ? ` × ${entry.qty}` : ""}` : null,
+    `Amount: ${fmt(entry.saleValue || entry.amount)}`,
+    entry.channel ? `Sold via: ${entry.channel}` : null,
+    entry.note && !entry.itemName ? `Note: ${entry.note}` : null,
+    ``,
+    `Thank you for your purchase!`,
+  ].filter((l) => l !== null);
+  return lines.join("\n");
+}
+
 async function copyToClipboard(text) {
   try {
     await navigator.clipboard.writeText(text);
@@ -423,6 +438,40 @@ const EXPENSE_CATEGORIES = [
   "Gym", "Healthy Food", "Food", "Travel", "Shopping", "Subscriptions", "Rent", "Other",
 ];
 const WASTE_TYPES = ["Drinks", "Smoking", "Alcohol", "Gambling", "Impulse Buy", "Other Waste"];
+const SALE_CHANNELS = ["Instagram", "WhatsApp", "Referral", "Marketplace", "Walk-in/Direct", "Other"];
+const COGS_CATEGORIES = new Set(["Sourcing/Business", "Shipping/Logistics", "Packaging"]);
+
+function nextOccurrenceOfDueDay(dueDay, fromDateISO) {
+  const from = new Date(fromDateISO + "T00:00:00");
+  const y = from.getFullYear(), m = from.getMonth();
+  let candidate = new Date(y, m, dueDay);
+  if (candidate < from) candidate = new Date(y, m + 1, dueDay);
+  return candidate.toISOString().slice(0, 10);
+}
+
+// Forward cash timeline from receivables/payables due dates and recurring fixed expenses —
+// answers "what will my cash look like in N days," not just "what is it today."
+function computeCashFlowTimeline(data, windowDays = 30) {
+  const today = todayISO();
+  const endDate = new Date(Date.now() + windowDays * 86400000).toISOString().slice(0, 10);
+  const startingCash = data.openingBalance + data.income.reduce((s, e) => s + e.amount, 0) - data.expenses.reduce((s, e) => s + e.amount, 0);
+
+  const events = [];
+  (data.receivables || []).filter((r) => r.status !== "received" && r.dueDate && r.dueDate >= today && r.dueDate <= endDate)
+    .forEach((r) => events.push({ date: r.dueDate, amount: r.amount, label: `${r.party} pays you`, type: "in" }));
+  (data.payables || []).filter((p) => p.status !== "paid" && p.dueDate && p.dueDate >= today && p.dueDate <= endDate)
+    .forEach((p) => events.push({ date: p.dueDate, amount: -p.amount, label: `pay ${p.party}`, type: "out" }));
+  (data.fixedExpenses || []).filter((fe) => fe.dueDay).forEach((fe) => {
+    const nextDate = nextOccurrenceOfDueDay(fe.dueDay, today);
+    if (nextDate <= endDate) events.push({ date: nextDate, amount: -fe.amount, label: fe.name, type: "out" });
+  });
+  events.sort((a, b) => a.date.localeCompare(b.date));
+
+  let running = startingCash;
+  const timeline = events.map((e) => { running += e.amount; return { ...e, runningBalance: Math.round(running) }; });
+  const lowestPoint = Math.round(Math.min(startingCash, ...timeline.map((t) => t.runningBalance)));
+  return { startingCash: Math.round(startingCash), events: timeline, projectedEnd: Math.round(running), lowestPoint, windowDays };
+}
 
 const countryFlag = (code) => {
   if (!code) return "";
@@ -1156,6 +1205,20 @@ function CalculatorModal({ onClose, data, persist, registerActivity, setToast, t
     }
   };
 
+  // FX-timing: compare the live rate against what you actually paid recently, so "get a rate"
+  // becomes "is now a good time to buy" instead of just a converter.
+  const recentPurchaseRate = useMemo(() => {
+    const matches = data.expenses
+      .filter((e) => e.currency === currency && e.fxRate)
+      .sort((a, b) => b.date.localeCompare(a.date))
+      .slice(0, 3);
+    if (matches.length === 0) return null;
+    const avgRate = matches.reduce((s, e) => s + e.fxRate, 0) / matches.length;
+    return { avgRate, count: matches.length, lastDate: matches[0].date };
+  }, [data.expenses, currency]);
+
+  const rateVsRecentPct = rate && recentPurchaseRate ? Math.round(((rate - recentPurchaseRate.avgRate) / recentPurchaseRate.avgRate) * 1000) / 10 : null;
+
   const convertedINR = rate && foreignAmount ? parseFloat(foreignAmount) * rate : null;
 
   const useInCalc = () => {
@@ -1265,6 +1328,14 @@ function CalculatorModal({ onClose, data, persist, registerActivity, setToast, t
             )}
             {rateError && <div style={{ fontSize: 10.5, color: T.orange, marginTop: 6, fontWeight: 700 }}>{rateError}</div>}
 
+            {rate && recentPurchaseRate && rateVsRecentPct !== null && (
+              <div style={{ fontSize: 10.5, marginTop: 6, fontWeight: 700, color: rateVsRecentPct <= 0 ? T.green : T.orange }} className="tnum">
+                {rateVsRecentPct <= 0
+                  ? `${Math.abs(rateVsRecentPct)}% CHEAPER THAN YOUR LAST ${recentPurchaseRate.count} BUY${recentPurchaseRate.count === 1 ? "" : "S"} (AVG ₹${recentPurchaseRate.avgRate.toFixed(2)}) — GOOD TIME TO SOURCE`
+                  : `${rateVsRecentPct}% MORE EXPENSIVE THAN YOUR LAST ${recentPurchaseRate.count} BUY${recentPurchaseRate.count === 1 ? "" : "S"} (AVG ₹${recentPurchaseRate.avgRate.toFixed(2)}) — WORSE TIME TO SOURCE`}
+              </div>
+            )}
+
             {convertedINR !== null && (
               <div style={{ ...S.heroCard, boxShadow: `4px 4px 0px ${T.purple}`, marginTop: 14 }}>
                 <div style={S.heroLabel}>CONVERTED TO INR</div>
@@ -1304,8 +1375,20 @@ const DEFAULT_FUNDS = [
   { id: "shopping", name: "Personal Shopping", pct: 15, color: "#FF5C35" },
   { id: "lala", name: "Lala Fund", pct: 2, color: "#6A35FF" },
   { id: "house", name: "Future House & Savings", pct: 15, color: "#35C9FF" },
-  { id: "business", name: "Business", pct: 40, color: "#FF35A8" },
+  { id: "business", name: "Business", pct: 30, color: "#FF35A8" },
+  { id: "tax", name: "Tax Set-Aside", pct: 10, color: "#F2C230" },
 ];
+
+// Retrofits a "tax" fund onto data saved before this feature shipped, taking the
+// percentage from whichever existing fund has the most room so the split still sums to 100.
+function ensureTaxFund(funds) {
+  if (!Array.isArray(funds) || funds.some((f) => f.id === "tax")) return funds;
+  const taxPct = 10;
+  const donor = [...funds].sort((a, b) => b.pct - a.pct)[0];
+  if (!donor) return funds;
+  const withDonorReduced = funds.map((f) => (f.id === donor.id ? { ...f, pct: Math.max(0, f.pct - taxPct) } : f));
+  return [...withDonorReduced, { id: "tax", name: "Tax Set-Aside", pct: taxPct, color: "#F2C230" }];
+}
 
 const emptyData = () => ({
   income: [],
@@ -1403,6 +1486,8 @@ export default function Khata() {
         loaded.northStar = loaded.northStar || "";
         loaded.pinLock = loaded.pinLock || { enabled: false, pin: null };
         loaded.agentMemory = loaded.agentMemory || {};
+        loaded.funds = ensureTaxFund(loaded.funds || DEFAULT_FUNDS);
+        loaded.fundBalances = { ...Object.fromEntries(loaded.funds.map((f) => [f.id, 0])), ...(loaded.fundBalances || {}) };
         dataRef.current = loaded;
         lastUpdatedAtRef.current = remote.updatedAt;
         setData(loaded);
@@ -1850,7 +1935,7 @@ function OverviewTab({ data, persist, registerActivity, setToast, triggerNoteAni
 
       <BrokerHoldingsSection data={data} persist={persist} />
 
-      <InvestmentsSection data={data} persist={persist} totalInvested={totalInvested} />
+      <InvestmentsSection data={data} persist={persist} totalInvested={totalInvested} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />
 
       <SinkingFundsSection data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />
 
@@ -2236,9 +2321,17 @@ function BrokerHoldingsSection({ data, persist }) {
 
 const INVESTMENT_TYPES = ["Inventory Stock", "Mutual Funds", "Others"];
 
-function InvestmentsSection({ data, persist, totalInvested }) {
+const DEAD_STOCK_DAYS = 45; // inventory sitting unsold this long gets flagged
+
+function daysBetweenDates(a, b) {
+  return Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);
+}
+
+function InvestmentsSection({ data, persist, totalInvested, registerActivity, setToast, triggerNoteAnim }) {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", amount: "", type: INVESTMENT_TYPES[0] });
+  const [soldFor, setSoldFor] = useState(null); // investment being marked sold
+  const [soldValues, setSoldValues] = useState(null);
 
   const addInvestment = () => {
     const amt = parseFloat(form.amount);
@@ -2249,6 +2342,57 @@ function InvestmentsSection({ data, persist, totalInvested }) {
     setShowForm(false);
   };
   const removeInvestment = (id) => persist({ ...data, investments: data.investments.filter((i) => i.id !== id) });
+
+  const startMarkSold = (inv) => {
+    setSoldFor(inv.id);
+    setSoldValues({ soldPrice: String(inv.amount), soldDate: todayISO() });
+  };
+  // Marking inventory sold is the real sale event: it books the realized profit/loss
+  // (not the "expected" profit guessed at purchase time) and records velocity for later.
+  // A profit goes to income like any other sale; a loss goes to expenses — income entries
+  // are always positive everywhere else in the app, so a negative "income" would corrupt totals.
+  const confirmMarkSold = () => {
+    const inv = data.investments.find((i) => i.id === soldFor);
+    const soldPrice = parseFloat(soldValues.soldPrice);
+    if (!inv || !soldPrice || soldPrice <= 0) return;
+    const realizedProfit = soldPrice - (inv.itemValue || 0);
+    const isLoss = realizedProfit < 0;
+    const days = daysBetweenDates(inv.date, soldValues.soldDate);
+    const itemLabel = `${inv.itemName || inv.name}${inv.qty ? ` ×${inv.qty}` : ""}`;
+    const fundDelta = fundDeltaForAmount(data.funds, Math.abs(realizedProfit), isLoss ? -1 : 1);
+    const fundBalances = swapFundDelta(data.fundBalances, {}, fundDelta);
+
+    const investments = data.investments.map((i) => (i.id === inv.id ? { ...i, status: "sold", soldPrice, soldDate: soldValues.soldDate } : i));
+    let next = { ...data, investments, fundBalances };
+    if (isLoss) {
+      const expense = { id: Date.now(), amount: Math.abs(realizedProfit), category: "Inventory Loss", note: `${itemLabel} — sold at a loss after ${days} day${days === 1 ? "" : "s"}`, date: soldValues.soldDate, unnecessary: false, fine: 0, fundDelta };
+      next = { ...next, expenses: [...data.expenses, expense] };
+    } else {
+      const income = { id: Date.now(), amount: realizedProfit, source: "Sold Order", note: `${itemLabel} — sold in ${days} day${days === 1 ? "" : "s"}`, date: soldValues.soldDate, fundDelta };
+      next = { ...next, income: [...data.income, income] };
+    }
+    if (registerActivity) next = registerActivity(next, 5);
+    persist(next);
+    if (triggerNoteAnim) triggerNoteAnim(Math.abs(realizedProfit), isLoss ? "out" : "in");
+    if (setToast) {
+      setToast(`${isLoss ? "−" : "+"}${fmt(Math.abs(realizedProfit))} REALIZED · SOLD IN ${days}D`);
+      setTimeout(() => setToast(null), 2000);
+    }
+    setSoldFor(null);
+    setSoldValues(null);
+  };
+
+  const inventoryStats = useMemo(() => {
+    const items = data.investments.filter((i) => i.investmentType === "Inventory Stock");
+    const sold = items.filter((i) => i.status === "sold");
+    const inStock = items.filter((i) => i.status !== "sold");
+    const avgDays = sold.length > 0
+      ? Math.round(sold.reduce((s, i) => s + daysBetweenDates(i.date, i.soldDate), 0) / sold.length)
+      : null;
+    const totalRealized = Math.round(sold.reduce((s, i) => s + (i.soldPrice - (i.itemValue || 0)), 0));
+    const deadStock = inStock.filter((i) => daysBetweenDates(i.date, todayISO()) >= DEAD_STOCK_DAYS);
+    return { avgDays, totalRealized, deadStockCount: deadStock.length, deadStockIds: new Set(deadStock.map((i) => i.id)) };
+  }, [data.investments]);
 
   const byType = useMemo(() => {
     const map = {};
@@ -2275,6 +2419,21 @@ function InvestmentsSection({ data, persist, totalInvested }) {
         <div style={{ ...S.statBoxNum, color: T.purple }} className="tnum">{fmt(totalInvested)}</div>
       </div>
 
+      {(inventoryStats.avgDays !== null || inventoryStats.deadStockCount > 0) && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          {inventoryStats.avgDays !== null && (
+            <div style={{ ...S.statBox, flex: 1, boxShadow: `3px 3px 0px ${T.green}` }}>
+              <div style={S.statBoxLabel}>AVG DAYS TO SELL</div>
+              <div style={{ ...S.statBoxNum, color: T.green, fontSize: 18 }} className="tnum">{inventoryStats.avgDays}</div>
+            </div>
+          )}
+          <div style={{ ...S.statBox, flex: 1, boxShadow: `3px 3px 0px ${inventoryStats.deadStockCount > 0 ? T.orange : T.green}` }}>
+            <div style={S.statBoxLabel}>DEAD STOCK ({DEAD_STOCK_DAYS}D+)</div>
+            <div style={{ ...S.statBoxNum, color: inventoryStats.deadStockCount > 0 ? T.orange : T.green, fontSize: 18 }} className="tnum">{inventoryStats.deadStockCount}</div>
+          </div>
+        </div>
+      )}
+
       {showForm && (
         <div style={S.formCard}>
           <input placeholder="what — e.g. Nifty 50 Index Fund" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} style={{ ...S.input, width: "100%" }} />
@@ -2300,18 +2459,32 @@ function InvestmentsSection({ data, persist, totalInvested }) {
               </div>
               <div style={S.ledger}>
                 {[...byType[t].items].reverse().map((i) => {
+                  const isInventory = i.investmentType === "Inventory Stock";
+                  const isSold = i.status === "sold";
+                  const isDead = inventoryStats.deadStockIds.has(i.id);
                   const marginPct = i.expectedProfit && i.amount > 0 ? Math.round((i.expectedProfit / i.amount) * 1000) / 10 : null;
+                  const realizedMargin = isSold ? i.soldPrice - (i.itemValue || 0) : null;
+                  const realizedPct = isSold && i.soldPrice > 0 ? Math.round((realizedMargin / i.soldPrice) * 1000) / 10 : null;
                   return (
                     <div key={i.id} style={S.ledgerRow}>
                       <div style={S.ledgerMain}>
-                        <div style={S.ledgerCategory}>{i.name} {i.source === "inventory_cashout" && <span style={S.fineTag}>CASHOUT</span>}</div>
+                        <div style={S.ledgerCategory}>
+                          {i.name} {i.source === "inventory_cashout" && <span style={S.fineTag}>CASHOUT</span>}
+                          {isSold && <span style={{ ...S.fineTag, color: T.green, borderColor: T.green }}>SOLD</span>}
+                          {isDead && <span style={{ ...S.fineTag, color: T.orange, borderColor: T.orange }}>DEAD STOCK</span>}
+                        </div>
                         <div style={S.ledgerNote}>
                           {fmtDate(i.date)}
-                          {i.expectedArrival && ` · arrives ${fmtDate(i.expectedArrival)}`}
-                          {i.expectedProfit ? ` · ~${fmt(i.expectedProfit)} profit${marginPct !== null ? ` (${marginPct}%)` : ""}` : ""}
+                          {i.expectedArrival && !isSold && ` · arrives ${fmtDate(i.expectedArrival)}`}
+                          {isSold
+                            ? ` · sold ${fmtDateShort(i.soldDate)} in ${daysBetweenDates(i.date, i.soldDate)}d · realized ${fmtSigned(realizedMargin)}${realizedPct !== null ? ` (${realizedPct}%)` : ""}`
+                            : i.expectedProfit ? ` · ~${fmt(i.expectedProfit)} expected profit${marginPct !== null ? ` (${marginPct}%)` : ""}` : ""}
                         </div>
                       </div>
                       <div style={{ ...S.ledgerAmt, color: T.purple }} className="tnum">{fmt(i.amount)}</div>
+                      {isInventory && !isSold && (
+                        <button style={S.editBtn} onClick={() => startMarkSold(i)} title="mark sold"><Check size={13} color={T.green} /></button>
+                      )}
                       <button style={S.deleteBtn} onClick={() => removeInvestment(i.id)}><Trash2 size={13} color={T.muted} /></button>
                     </div>
                   );
@@ -2320,6 +2493,20 @@ function InvestmentsSection({ data, persist, totalInvested }) {
             </div>
           ))}
         </div>
+      )}
+
+      {soldFor && soldValues && (
+        <EditEntryModal
+          title="MARK INVENTORY SOLD"
+          values={soldValues}
+          onChange={(key, val) => setSoldValues({ ...soldValues, [key]: val })}
+          onSave={confirmMarkSold}
+          onCancel={() => { setSoldFor(null); setSoldValues(null); }}
+          fields={[
+            { key: "soldPrice", type: "amount", label: "actual sold price" },
+            { key: "soldDate", type: "date", label: "sold date" },
+          ]}
+        />
       )}
     </>
   );
@@ -2928,7 +3115,7 @@ function QuickActionsBar({ data, persist, registerActivity, setToast, triggerNot
   const [pick, setPick] = useState(INCOME_SOURCES[0]);
   const [note, setNote] = useState("");
   const [account, setAccount] = useState("none");
-  const [so, setSo] = useState({ itemName: "", qty: "", saleValue: "", expectedProfit: "", moneyReceived: "", moneyDue: "", recipientName: "", expectedReceivableDate: "" });
+  const [so, setSo] = useState({ itemName: "", qty: "", saleValue: "", expectedProfit: "", moneyReceived: "", moneyDue: "", recipientName: "", expectedReceivableDate: "", channel: SALE_CHANNELS[0] });
   const [co, setCo] = useState({ itemName: "", qty: "", itemValue: "", expectedSellingPrice: "", expectedProfit: "", expectedArrival: "" });
 
   const openMode = (m) => {
@@ -2937,7 +3124,7 @@ function QuickActionsBar({ data, persist, registerActivity, setToast, triggerNot
     setNote("");
     setAccount("none");
     setPick(m === "profit" ? INCOME_SOURCES[0] : m === "waste" ? WASTE_TYPES[0] : EXPENSE_CATEGORIES[0]);
-    setSo({ itemName: "", qty: "", saleValue: "", expectedProfit: "", moneyReceived: "", moneyDue: "", recipientName: "", expectedReceivableDate: "" });
+    setSo({ itemName: "", qty: "", saleValue: "", expectedProfit: "", moneyReceived: "", moneyDue: "", recipientName: "", expectedReceivableDate: "", channel: SALE_CHANNELS[0] });
     setCo({ itemName: "", qty: "", itemValue: "", expectedSellingPrice: "", expectedProfit: "", expectedArrival: "" });
   };
 
@@ -2967,6 +3154,7 @@ function QuickActionsBar({ data, persist, registerActivity, setToast, triggerNot
         id: Date.now(), amount: profit, source: "Sold Order",
         note: `${so.recipientName || "buyer"} — sale ₹${so.saleValue || 0}, received ₹${so.moneyReceived || 0}${profitPct !== null ? ` (${profitPct}% margin)` : ""}${note ? " — " + note.trim() : ""}`,
         date: today, fundDelta, itemName: so.itemName || null, qty: so.qty ? parseFloat(so.qty) : null,
+        customerName: so.recipientName.trim() || null, channel: so.channel || null, saleValue: saleVal || null,
       };
       let next = registerActivity({ ...data, income: [...data.income, entry], fundBalances }, 5);
       if (due > 0) {
@@ -2985,7 +3173,7 @@ function QuickActionsBar({ data, persist, registerActivity, setToast, triggerNot
         id: Date.now(), name: itemLabel || note.trim() || "Inventory Cashout", amount: sellingPrice, date: today,
         itemValue: parseFloat(co.itemValue) || 0, expectedProfit: parseFloat(co.expectedProfit) || 0,
         expectedArrival: co.expectedArrival || null, itemName: co.itemName || null, qty: co.qty ? parseFloat(co.qty) : null,
-        source: "inventory_cashout", account: account !== "none" ? account : null, investmentType: "Inventory Stock",
+        source: "inventory_cashout", account: account !== "none" ? account : null, investmentType: "Inventory Stock", status: "in_stock",
       };
       persist({ ...data, investments: [...data.investments, investment] });
       setToast("LOGGED TO INVESTMENTS · PENDING ARRIVAL");
@@ -3092,6 +3280,9 @@ function QuickActionsBar({ data, persist, registerActivity, setToast, triggerNot
             {ACCOUNT_OPTIONS.map((a) => <option key={a.id} value={a.id}>{a.id === "none" ? a.label : `MONEY RECEIVED → ${a.label}`}</option>)}
           </select>
           <input type="text" placeholder="recipient's name" value={so.recipientName} onChange={(e) => setSo({ ...so, recipientName: e.target.value })} style={{ ...S.input, width: "100%" }} />
+          <select value={so.channel} onChange={(e) => setSo({ ...so, channel: e.target.value })} style={S.select}>
+            {SALE_CHANNELS.map((c) => <option key={c} value={c}>SOLD VIA — {c.toUpperCase()}</option>)}
+          </select>
           <input type="date" placeholder="expected receivable date" value={so.expectedReceivableDate} onChange={(e) => setSo({ ...so, expectedReceivableDate: e.target.value })} style={{ ...S.input, width: "100%" }} className="tnum" />
           <input type="text" placeholder="note (optional)" value={note} onChange={(e) => setNote(e.target.value)} style={{ ...S.input, width: "100%" }} />
           <button style={S.submitBtnGreen} className="npop" onClick={submit}>SAVE SOLD ORDER</button>
@@ -3436,6 +3627,8 @@ function IncomeTab({ data, persist, registerActivity, setToast, triggerNoteAnim 
   const [search, setSearch] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [editValues, setEditValues] = useState(null);
+  const [receiptFor, setReceiptFor] = useState(null);
+  const [receiptCopied, setReceiptCopied] = useState(false);
 
   const sorted = useMemo(() => {
     const s = [...data.income].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id);
@@ -3541,11 +3734,38 @@ function IncomeTab({ data, persist, registerActivity, setToast, triggerNoteAnim 
               {e.note && <div style={S.ledgerNote}>{e.note}</div>}
             </div>
             <div style={{ ...S.ledgerAmt, color: T.green }} className="tnum">+{fmt(e.amount)}</div>
+            {e.source === "Sold Order" && (
+              <button style={S.editBtn} onClick={() => { setReceiptFor(e.id); setReceiptCopied(false); }} title="receipt"><FileDown size={12} color={T.purple} /></button>
+            )}
             <button style={S.editBtn} onClick={() => startEdit(e)}><Pencil size={12} color={T.muted} /></button>
             <button style={S.deleteBtn} onClick={() => removeEntry(e.id)}><Trash2 size={13} color={T.muted} /></button>
           </div>
         ))}
       </div>
+
+      {receiptFor && (() => {
+        const entry = data.income.find((e) => e.id === receiptFor);
+        if (!entry) return null;
+        const text = buildReceiptText(entry);
+        return (
+          <div style={S.calcOverlay} onClick={() => setReceiptFor(null)}>
+            <div style={S.calcModal} onClick={(ev) => ev.stopPropagation()}>
+              <div style={S.calcHeader}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: T.ivory }}>RECEIPT</div>
+                <button style={S.calcCloseBtn} onClick={() => setReceiptFor(null)}><X size={16} color={T.ivory} /></button>
+              </div>
+              <textarea readOnly value={text} onFocus={(ev) => ev.target.select()} style={{ ...S.input, width: "100%", height: 160, fontSize: 11, fontFamily: "monospace", resize: "vertical" }} />
+              <button
+                style={{ ...S.submitBtnGreen, marginTop: 10 }}
+                className="npop"
+                onClick={async () => { const ok = await copyToClipboard(text); setReceiptCopied(ok); setTimeout(() => setReceiptCopied(false), 2000); }}
+              >
+                {receiptCopied ? "COPIED ✓" : "COPY TO SEND"}
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       {editingId && editValues && (
         <EditEntryModal
@@ -3674,8 +3894,9 @@ function ExpenseTab({ data, persist, registerActivity, setToast, triggerNoteAnim
   const [editValues, setEditValues] = useState(null);
   const [form, setForm] = useState({
     amount: "", category: EXPENSE_CATEGORIES[0], note: "", date: todayISO(), wasteType: WASTE_TYPES[0], account: "none",
-    itemName: "", qty: "", saleValue: "", expectedProfit: "", moneyReceived: "", moneyDue: "", recipientName: "", expectedReceivableDate: "",
+    itemName: "", qty: "", saleValue: "", expectedProfit: "", moneyReceived: "", moneyDue: "", recipientName: "", expectedReceivableDate: "", channel: SALE_CHANNELS[0],
     itemValue: "", expectedSellingPrice: "", expectedArrival: "", photo: null,
+    currency: "INR", foreignAmount: "", fxRate: "",
   });
 
   const sorted = useMemo(() => {
@@ -3691,8 +3912,9 @@ function ExpenseTab({ data, persist, registerActivity, setToast, triggerNoteAnim
 
   const resetForm = () => setForm({
     amount: "", category: EXPENSE_CATEGORIES[0], note: "", date: todayISO(), wasteType: WASTE_TYPES[0], account: "none",
-    itemName: "", qty: "", saleValue: "", expectedProfit: "", moneyReceived: "", moneyDue: "", recipientName: "", expectedReceivableDate: "",
+    itemName: "", qty: "", saleValue: "", expectedProfit: "", moneyReceived: "", moneyDue: "", recipientName: "", expectedReceivableDate: "", channel: SALE_CHANNELS[0],
     itemValue: "", expectedSellingPrice: "", expectedArrival: "", photo: null,
+    currency: "INR", foreignAmount: "", fxRate: "",
   });
 
   const applyFundIncome = (amt) => {
@@ -3706,8 +3928,22 @@ function ExpenseTab({ data, persist, registerActivity, setToast, triggerNoteAnim
     return { fundDelta, fundBalances };
   };
 
+  const isForeign = form.currency !== "INR";
+  const computedForeignAmt = isForeign ? Math.round((parseFloat(form.foreignAmount) || 0) * (parseFloat(form.fxRate) || 0)) : null;
+
+  // live budget preview while filling the form, before the user even submits
+  const budgetPreview = useMemo(() => {
+    if (entryType !== "expense") return null;
+    const budget = data.budgets.find((b) => b.category === form.category);
+    if (!budget) return null;
+    const spentSoFar = data.expenses.filter((e) => e.category === form.category && monthKey(e.date) === monthKey(form.date)).reduce((s, e) => s + e.amount, 0);
+    const pendingAmt = isForeign ? (computedForeignAmt || 0) : (parseFloat(form.amount) || 0);
+    const projected = spentSoFar + pendingAmt;
+    return { limit: budget.limit, spentSoFar, projected, overBudget: projected > budget.limit };
+  }, [entryType, form.category, form.date, form.amount, data.budgets, data.expenses, isForeign, computedForeignAmt]);
+
   const addExpenseOrWaste = () => {
-    const baseAmt = parseFloat(form.amount);
+    const baseAmt = isForeign ? computedForeignAmt : parseFloat(form.amount);
     if (!baseAmt || baseAmt <= 0) return;
     const isWaste = entryType === "waste";
     const fine = isWaste ? tieredFine(baseAmt) : 0;
@@ -3723,6 +3959,7 @@ function ExpenseTab({ data, persist, registerActivity, setToast, triggerNoteAnim
     const entry = {
       id: Date.now(), amount: amt, category, note: form.note.trim(),
       date: form.date, unnecessary: isWaste, fine, fundDelta, photo: form.photo || null,
+      ...(isForeign ? { currency: form.currency, foreignAmount: parseFloat(form.foreignAmount), fxRate: parseFloat(form.fxRate) } : {}),
     };
     let next = { ...data, expenses: [...data.expenses, entry], fundBalances };
     next = registerActivity(next, 3);
@@ -3731,8 +3968,19 @@ function ExpenseTab({ data, persist, registerActivity, setToast, triggerNoteAnim
     triggerNoteAnim(amt, "out");
     resetForm();
     setShowForm(false);
-    setToast(fine ? `LOGGED + ₹${fine} FINE` : form.account !== "none" ? `+3 XP · ${form.account.toUpperCase()} UPDATED` : "+3 XP · FUNDS UPDATED");
-    setTimeout(() => setToast(null), 1600);
+
+    // Real-time budget-cap warning — compares this month's actual spend (including this entry)
+    // against any limit set for the category in Budget vs Actual.
+    const budget = data.budgets.find((b) => b.category === category);
+    const monthSpendBefore = data.expenses.filter((e) => e.category === category && monthKey(e.date) === monthKey(form.date)).reduce((s, e) => s + e.amount, 0);
+    const monthSpendAfter = monthSpendBefore + amt;
+    if (budget && monthSpendAfter > budget.limit) {
+      setToast(`⚠ OVER BUDGET — ${category.toUpperCase()} AT ${fmt(monthSpendAfter)} / ${fmt(budget.limit)} THIS MONTH`);
+      setTimeout(() => setToast(null), 3000);
+    } else {
+      setToast(fine ? `LOGGED + ₹${fine} FINE` : form.account !== "none" ? `+3 XP · ${form.account.toUpperCase()} UPDATED` : "+3 XP · FUNDS UPDATED");
+      setTimeout(() => setToast(null), 1600);
+    }
   };
 
   const addSoldOrder = () => {
@@ -3748,6 +3996,7 @@ function ExpenseTab({ data, persist, registerActivity, setToast, triggerNoteAnim
       id: Date.now(), amount: profit, source: "Sold Order",
       note: `${itemLabel ? itemLabel + " — " : ""}${form.recipientName || "buyer"} — sale ₹${form.saleValue || 0}, received ₹${form.moneyReceived || 0}${profitPct !== null ? ` (${profitPct}% margin)` : ""}${form.note ? " — " + form.note.trim() : ""}`,
       date: form.date, fundDelta, itemName: form.itemName || null, qty: form.qty ? parseFloat(form.qty) : null,
+      customerName: form.recipientName.trim() || null, channel: form.channel || null, saleValue: saleVal || null,
     };
     let next = registerActivity({ ...data, income: [...data.income, entry], fundBalances }, 5);
     if (due > 0) {
@@ -3784,6 +4033,7 @@ function ExpenseTab({ data, persist, registerActivity, setToast, triggerNoteAnim
       source: "inventory_cashout",
       account: form.account !== "none" ? form.account : null,
       investmentType: "Inventory Stock",
+      status: "in_stock",
     };
     persist({ ...data, investments: [...data.investments, investment] });
     resetForm();
@@ -3871,10 +4121,22 @@ function ExpenseTab({ data, persist, registerActivity, setToast, triggerNoteAnim
           <div style={S.formCard}>
             {(entryType === "expense" || entryType === "waste") && (
               <>
-                <div style={S.formRow}>
-                  <AmountInput placeholder="amount" value={form.amount} onChange={(v) => setForm({ ...form, amount: v })} style={S.input} className="tnum" />
-                  <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} style={S.input} className="tnum" />
-                </div>
+                <select value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} style={S.select}>
+                  <option value="INR">PAID IN — INR</option>
+                  {CURRENCIES.map((c) => <option key={c} value={c}>PAID IN — {c}</option>)}
+                </select>
+                {isForeign ? (
+                  <>
+                    <div style={S.formRow}>
+                      <AmountInput placeholder={`amount (${form.currency})`} value={form.foreignAmount} onChange={(v) => setForm({ ...form, foreignAmount: v })} style={S.input} className="tnum" />
+                      <AmountInput placeholder={`${form.currency}→INR rate`} value={form.fxRate} onChange={(v) => setForm({ ...form, fxRate: v })} style={S.input} className="tnum" />
+                    </div>
+                    <div style={{ fontSize: 10.5, color: T.muted }} className="tnum">≈ {fmt(computedForeignAmt || 0)} AT THIS RATE</div>
+                  </>
+                ) : (
+                  <AmountInput placeholder="amount" value={form.amount} onChange={(v) => setForm({ ...form, amount: v })} style={{ ...S.input, width: "100%" }} className="tnum" />
+                )}
+                <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} style={{ ...S.input, width: "100%" }} className="tnum" />
                 {entryType === "waste" ? (
                   <select value={form.wasteType} onChange={(e) => setForm({ ...form, wasteType: e.target.value })} style={S.select}>
                     {WASTE_TYPES.map((c) => <option key={c} value={c}>{c}</option>)}
@@ -3883,6 +4145,11 @@ function ExpenseTab({ data, persist, registerActivity, setToast, triggerNoteAnim
                   <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} style={S.select}>
                     {EXPENSE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
                   </select>
+                )}
+                {budgetPreview && (
+                  <div style={{ fontSize: 10.5, fontWeight: 700, color: budgetPreview.overBudget ? T.orange : T.muted }} className="tnum">
+                    {budgetPreview.overBudget ? "⚠ " : ""}{fmt(budgetPreview.projected)} / {fmt(budgetPreview.limit)} BUDGET THIS MONTH{budgetPreview.overBudget ? " — OVER" : ""}
+                  </div>
                 )}
                 <select value={form.account} onChange={(e) => setForm({ ...form, account: e.target.value })} style={S.select}>
                   {ACCOUNT_OPTIONS.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
@@ -3929,6 +4196,9 @@ function ExpenseTab({ data, persist, registerActivity, setToast, triggerNoteAnim
                   {ACCOUNT_OPTIONS.map((a) => <option key={a.id} value={a.id}>{a.id === "none" ? a.label : `MONEY RECEIVED → ${a.label}`}</option>)}
                 </select>
                 <input type="text" placeholder="recipient's name" value={form.recipientName} onChange={(e) => setForm({ ...form, recipientName: e.target.value })} style={{ ...S.input, width: "100%" }} />
+                <select value={form.channel} onChange={(e) => setForm({ ...form, channel: e.target.value })} style={S.select}>
+                  {SALE_CHANNELS.map((c) => <option key={c} value={c}>SOLD VIA — {c.toUpperCase()}</option>)}
+                </select>
                 <input type="date" placeholder="expected receivable date" value={form.expectedReceivableDate} onChange={(e) => setForm({ ...form, expectedReceivableDate: e.target.value })} style={{ ...S.input, width: "100%" }} className="tnum" />
                 <input type="text" placeholder="note (optional)" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} style={{ ...S.input, width: "100%" }} />
                 <button style={S.submitBtnGreen} className="npop" onClick={addSoldOrder}>SAVE SOLD ORDER</button>
@@ -3973,6 +4243,7 @@ function ExpenseTab({ data, persist, registerActivity, setToast, triggerNoteAnim
             <div style={S.ledgerMain}>
               <div style={S.ledgerCategory}>{e.category} {e.unnecessary && <span style={S.fineTag}>WASTE</span>}</div>
               {e.note && <div style={S.ledgerNote}>{e.note}</div>}
+              {e.currency && <div style={S.ledgerNote} className="tnum">{e.foreignAmount} {e.currency} @ {e.fxRate}</div>}
             </div>
             <div style={{ ...S.ledgerAmt, color: T.orange }} className="tnum">−{fmt(e.amount)}</div>
             <button style={S.editBtn} onClick={() => startEdit(e)}><Pencil size={12} color={T.muted} /></button>
@@ -5527,6 +5798,54 @@ function AnalyticsTab({ data, persist }) {
     return Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([name, value]) => ({ name, value }));
   }, [data.income]);
 
+  // repeat-customer view — only sales that recorded a customerName (added after this feature shipped)
+  const topCustomers = useMemo(() => {
+    const map = {};
+    data.income.filter((e) => e.customerName).forEach((e) => {
+      if (!map[e.customerName]) map[e.customerName] = { total: 0, count: 0, lastDate: e.date };
+      map[e.customerName].total += e.amount;
+      map[e.customerName].count += 1;
+      if (e.date > map[e.customerName].lastDate) map[e.customerName].lastDate = e.date;
+    });
+    return Object.entries(map).map(([name, v]) => ({ name, ...v })).sort((a, b) => b.total - a.total).slice(0, 8);
+  }, [data.income]);
+
+  const salesByChannel = useMemo(() => {
+    const map = {};
+    data.income.filter((e) => e.source === "Sold Order" && e.channel).forEach((e) => {
+      map[e.channel] = (map[e.channel] || 0) + e.amount;
+    });
+    return Object.entries(map).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value }));
+  }, [data.income]);
+
+  // month-by-month P&L — COGS is the sourcing/shipping/packaging categories, everything
+  // else non-waste is opex, waste gets its own line so it doesn't hide inside "expenses"
+  const pnlByMonth = useMemo(() => {
+    const months = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date();
+      d.setMonth(d.getMonth() - i);
+      const mk = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const monthExpenses = data.expenses.filter((e) => monthKey(e.date) === mk);
+      const revenue = data.income.filter((e) => monthKey(e.date) === mk).reduce((s, e) => s + e.amount, 0);
+      const cogs = monthExpenses.filter((e) => !e.unnecessary && COGS_CATEGORIES.has(e.category)).reduce((s, e) => s + e.amount, 0);
+      const opex = monthExpenses.filter((e) => !e.unnecessary && !COGS_CATEGORIES.has(e.category)).reduce((s, e) => s + e.amount, 0);
+      const waste = monthExpenses.filter((e) => e.unnecessary).reduce((s, e) => s + e.amount, 0);
+      const grossProfit = revenue - cogs;
+      const netProfit = grossProfit - opex - waste;
+      months.push({
+        month: d.toLocaleDateString("en-IN", { month: "short", year: "2-digit" }),
+        revenue: Math.round(revenue), cogs: Math.round(cogs), grossProfit: Math.round(grossProfit),
+        opex: Math.round(opex), waste: Math.round(waste), netProfit: Math.round(netProfit),
+        grossMarginPct: revenue > 0 ? Math.round((grossProfit / revenue) * 1000) / 10 : null,
+        netMarginPct: revenue > 0 ? Math.round((netProfit / revenue) * 1000) / 10 : null,
+      });
+    }
+    return months;
+  }, [data.income, data.expenses]);
+
+  const cashFlowForecast = useMemo(() => computeCashFlowTimeline(data, 30), [data.income, data.expenses, data.receivables, data.payables, data.fixedExpenses, data.openingBalance]);
+
   // net worth history — running snapshot at each month-end, last 6 months
   const netWorthHistory = useMemo(() => {
     const months = [];
@@ -5623,19 +5942,6 @@ function AnalyticsTab({ data, persist }) {
     const projectedBalance = cashBalance + expectedReceivables - expectedPayables - dailyBurn * 30;
     return { dailyBurn, expectedReceivables, expectedPayables, projectedBalance };
   }, [data.expenses, data.receivables, data.payables, cashBalance]);
-
-  // merchant/party breakdown — from sold orders + dues
-  const merchantData = useMemo(() => {
-    const map = {};
-    data.income.filter((e) => e.source === "Sold Order").forEach((e) => {
-      const name = e.note?.split(" — ")[0] || "Unknown";
-      map[name] = (map[name] || 0) + e.amount;
-    });
-    [...data.receivables, ...data.payables].forEach((d) => {
-      map[d.party] = (map[d.party] || 0) + d.amount;
-    });
-    return Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([name, value]) => ({ name, value }));
-  }, [data.income, data.receivables, data.payables]);
 
   // financial calendar — current month day-by-day activity map
   const calendarDays = useMemo(() => {
@@ -5833,6 +6139,39 @@ function AnalyticsTab({ data, persist }) {
         </div>
       </div>
 
+      <SectionLabel text="PROFIT & LOSS — LAST 6 MONTHS" />
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 4 }}>
+        {[...pnlByMonth].reverse().map((m) => (
+          <div key={m.month} style={{ ...S.historyCard }}>
+            <div style={S.historyTop}>
+              <span style={S.budgetName}>{m.month.toUpperCase()}</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: m.netProfit >= 0 ? T.green : T.orange }} className="tnum">{fmtSigned(m.netProfit)}</span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 8 }} className="tnum">
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5 }}>
+                <span style={{ color: T.muted }}>REVENUE</span><span style={{ color: T.ivory }}>{fmt(m.revenue)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5 }}>
+                <span style={{ color: T.muted }}>− COGS (SOURCING/SHIPPING/PACKAGING)</span><span style={{ color: T.orange }}>{fmt(m.cogs)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, fontWeight: 700 }}>
+                <span style={{ color: T.ivory }}>= GROSS PROFIT {m.grossMarginPct !== null ? `(${m.grossMarginPct}%)` : ""}</span><span style={{ color: T.ivory }}>{fmtSigned(m.grossProfit)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5 }}>
+                <span style={{ color: T.muted }}>− OPEX</span><span style={{ color: T.orange }}>{fmt(m.opex)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5 }}>
+                <span style={{ color: T.muted }}>− WASTE</span><span style={{ color: T.orange }}>{fmt(m.waste)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontWeight: 700, borderTop: `1px solid ${T.line}`, paddingTop: 4, marginTop: 2 }}>
+                <span style={{ color: T.ivory }}>= NET PROFIT {m.netMarginPct !== null ? `(${m.netMarginPct}%)` : ""}</span>
+                <span style={{ color: m.netProfit >= 0 ? T.green : T.orange }}>{fmtSigned(m.netProfit)}</span>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
       <SectionLabel text="TOP EXPENSE CATEGORIES" />
       {topExpenseCats.length === 0 ? <EmptyNote text="no expenses logged yet" /> : (
         <ChartCard title="BY CATEGORY" height={Math.max(140, topExpenseCats.length * 34)}>
@@ -5859,6 +6198,39 @@ function AnalyticsTab({ data, persist }) {
             </Bar>
           </BarChart>
         </ChartCard>
+      )}
+
+      {topCustomers.length > 0 && (
+        <>
+          <SectionLabel text="TOP CUSTOMERS" />
+          <div style={S.ledger}>
+            {topCustomers.map((c) => (
+              <div key={c.name} style={S.ledgerRow}>
+                <div style={S.ledgerMain}>
+                  <div style={S.ledgerCategory}>{c.name}</div>
+                  <div style={S.ledgerNote}>{c.count} SALE{c.count === 1 ? "" : "S"} · LAST {fmtDateShort(c.lastDate)}</div>
+                </div>
+                <div style={{ ...S.ledgerAmt, color: T.green }} className="tnum">{fmt(c.total)}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {salesByChannel.length > 0 && (
+        <>
+          <SectionLabel text="SALES BY CHANNEL" />
+          <ChartCard title="WHERE SALES COME FROM" height={Math.max(120, salesByChannel.length * 34)}>
+            <BarChart data={salesByChannel} layout="vertical" margin={{ left: 8, right: 16 }}>
+              <XAxis type="number" hide />
+              <YAxis dataKey="name" type="category" width={100} tick={{ fill: T.ivory, fontSize: 10, fontFamily: "'Space Grotesk', sans-serif" }} axisLine={false} tickLine={false} />
+              <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v) => fmt(v)} cursor={{ fill: T.line, opacity: 0.3 }} />
+              <Bar dataKey="value" radius={[0, 3, 3, 0]}>
+                {salesByChannel.map((_, i) => <Cell key={i} fill={T.purple} fillOpacity={1 - i * 0.12} />)}
+              </Bar>
+            </BarChart>
+          </ChartCard>
+        </>
       )}
 
       <BudgetVsActual data={data} persist={persist} />
@@ -5902,20 +6274,24 @@ function AnalyticsTab({ data, persist }) {
           <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: T.muted }}>EXPECTED RECEIVABLES (30D)</span><span style={{ color: T.green }}>+{fmt(forecast30.expectedReceivables)}</span></div>
           <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: T.muted }}>EXPECTED PAYABLES (30D)</span><span style={{ color: T.orange }}>−{fmt(forecast30.expectedPayables)}</span></div>
         </div>
+        {cashFlowForecast.lowestPoint < cashFlowForecast.startingCash && (
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: cashFlowForecast.lowestPoint < 0 ? T.orange : T.muted, marginTop: 10, borderTop: `1px solid ${T.line}`, paddingTop: 8 }} className="tnum">
+            {cashFlowForecast.lowestPoint < 0 ? "⚠ " : ""}ON THE ACTUAL DUE-DATE TIMELINE, CASH DIPS AS LOW AS {fmt(cashFlowForecast.lowestPoint)} ALONG THE WAY
+          </div>
+        )}
       </div>
-
-      <SectionLabel text="MERCHANT / PARTY BREAKDOWN" />
-      {merchantData.length === 0 ? <EmptyNote text="log Sold Orders or Dues to see who you do business with most" /> : (
-        <ChartCard title="TOP PARTIES BY VALUE" height={Math.max(140, merchantData.length * 34)}>
-          <BarChart data={merchantData} layout="vertical" margin={{ left: 8, right: 16 }}>
-            <XAxis type="number" hide />
-            <YAxis dataKey="name" type="category" width={100} tick={{ fill: T.ivory, fontSize: 10, fontFamily: "'Space Grotesk', sans-serif" }} axisLine={false} tickLine={false} />
-            <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v) => fmt(v)} cursor={{ fill: T.line, opacity: 0.3 }} />
-            <Bar dataKey="value" radius={[0, 3, 3, 0]}>
-              {merchantData.map((_, i) => <Cell key={i} fill={T.blue} fillOpacity={1 - i * 0.12} />)}
-            </Bar>
-          </BarChart>
-        </ChartCard>
+      {cashFlowForecast.events.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 4 }}>
+          {cashFlowForecast.events.map((e, i) => (
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, padding: "6px 2px", borderBottom: `1px solid ${T.line}` }} className="tnum">
+              <span style={{ color: T.muted }}>{fmtDateShort(e.date)} · {e.label}</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ color: e.type === "in" ? T.green : T.orange, fontWeight: 700 }}>{e.type === "in" ? "+" : "−"}{fmt(Math.abs(e.amount))}</span>
+                <span style={{ color: e.runningBalance < 0 ? T.orange : T.ivory, fontSize: 10 }}>→ {fmt(e.runningBalance)}</span>
+              </span>
+            </div>
+          ))}
+        </div>
       )}
 
       <SectionLabel text="FINANCIAL CALENDAR" />
