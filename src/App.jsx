@@ -3608,6 +3608,52 @@ function DreamGoalCard({ data, persist, goal, fundId, label }) {
 
 /* ---------------- Income ---------------- */
 
+const DATE_FILTER_PRESETS = [
+  { id: "month", label: "THIS MONTH" },
+  { id: "week", label: "THIS WEEK" },
+  { id: "today", label: "TODAY" },
+  { id: "all", label: "ALL TIME" },
+  { id: "custom", label: "CUSTOM" },
+];
+function computeDateRange(preset, customFrom, customTo) {
+  const today = todayISO();
+  if (preset === "today") return { from: today, to: today };
+  if (preset === "week") return { from: new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10), to: today };
+  if (preset === "month") return { from: `${currentMonthKey()}-01`, to: today };
+  if (preset === "custom") return { from: customFrom || null, to: customTo || null };
+  return { from: null, to: null }; // all time
+}
+function dateFilterLabel(preset, from, to) {
+  const p = DATE_FILTER_PRESETS.find((x) => x.id === preset);
+  if (preset !== "custom") return p.label;
+  if (from && to) return `${fmtDateShort(from)} – ${fmtDateShort(to)}`;
+  return "CUSTOM RANGE";
+}
+function DateRangeFilter({ preset, setPreset, customFrom, setCustomFrom, customTo, setCustomTo }) {
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+        {DATE_FILTER_PRESETS.map((p) => (
+          <button
+            key={p.id}
+            style={{ ...S.miniTypeBtn, borderColor: T.gold, color: preset === p.id ? T.bg : T.gold, background: preset === p.id ? T.gold : "none" }}
+            className="npop-flat"
+            onClick={() => setPreset(p.id)}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+      {preset === "custom" && (
+        <div style={{ ...S.formRow, marginTop: 8 }}>
+          <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} style={S.input} className="tnum" />
+          <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} style={S.input} className="tnum" />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function IncomeTab({ data, persist, registerActivity, setToast, triggerNoteAnim }) {
   const [form, setForm] = useState({ amount: "", source: INCOME_SOURCES[0], note: "", date: todayISO(), account: "none" });
   const [showForm, setShowForm] = useState(false);
@@ -3616,17 +3662,23 @@ function IncomeTab({ data, persist, registerActivity, setToast, triggerNoteAnim 
   const [editValues, setEditValues] = useState(null);
   const [receiptFor, setReceiptFor] = useState(null);
   const [receiptCopied, setReceiptCopied] = useState(false);
+  const [dateFilter, setDateFilter] = useState("month");
+  const [customFrom, setCustomFrom] = useState(todayISO());
+  const [customTo, setCustomTo] = useState(todayISO());
+
+  const { from, to } = useMemo(() => computeDateRange(dateFilter, customFrom, customTo), [dateFilter, customFrom, customTo]);
 
   const sorted = useMemo(() => {
-    const s = [...data.income].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id);
-    if (!search.trim()) return s;
-    const q = search.trim().toLowerCase();
-    return s.filter((e) => e.source.toLowerCase().includes(q) || (e.note || "").toLowerCase().includes(q));
-  }, [data.income, search]);
-  const thisMonthTotal = useMemo(
-    () => data.income.filter((e) => monthKey(e.date) === currentMonthKey()).reduce((s, e) => s + e.amount, 0),
-    [data.income]
-  );
+    let s = [...data.income].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id);
+    if (from) s = s.filter((e) => e.date >= from);
+    if (to) s = s.filter((e) => e.date <= to);
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      s = s.filter((e) => e.source.toLowerCase().includes(q) || (e.note || "").toLowerCase().includes(q));
+    }
+    return s;
+  }, [data.income, search, from, to]);
+  const filteredTotal = useMemo(() => sorted.reduce((s, e) => s + e.amount, 0), [sorted]);
 
   const addEntry = () => {
     const amt = parseFloat(form.amount);
@@ -3681,11 +3733,13 @@ function IncomeTab({ data, persist, registerActivity, setToast, triggerNoteAnim 
   return (
     <div>
       <div style={S.heroCard}>
-        <div style={S.heroLabel}>INCOME THIS MONTH</div>
-        <div style={{ ...S.heroNum, color: T.green }} className="tnum">{fmt(thisMonthTotal)}</div>
+        <div style={S.heroLabel}>INCOME — {dateFilterLabel(dateFilter, from, to)}</div>
+        <div style={{ ...S.heroNum, color: T.green }} className="tnum">{fmt(filteredTotal)}</div>
       </div>
 
-      <div style={S.sectionHeadRow}>
+      <DateRangeFilter preset={dateFilter} setPreset={setDateFilter} customFrom={customFrom} setCustomFrom={setCustomFrom} customTo={customTo} setCustomTo={setCustomTo} />
+
+      <div style={{ ...S.sectionHeadRow, marginTop: 16 }}>
         <SectionLabel text={`ENTRIES — ${sorted.length}`} noMargin />
         <button style={S.addBtn} className="npop" onClick={() => setShowForm((s) => !s)}>
           {showForm ? <X size={14} /> : <Plus size={14} />} {showForm ? "CANCEL" : "ADD INCOME"}
@@ -3879,6 +3933,9 @@ function ExpenseTab({ data, persist, registerActivity, setToast, triggerNoteAnim
   const [search, setSearch] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [editValues, setEditValues] = useState(null);
+  const [dateFilter, setDateFilter] = useState("month");
+  const [customFrom, setCustomFrom] = useState(todayISO());
+  const [customTo, setCustomTo] = useState(todayISO());
   const [form, setForm] = useState({
     amount: "", category: EXPENSE_CATEGORIES[0], note: "", date: todayISO(), wasteType: WASTE_TYPES[0], account: "none",
     itemName: "", qty: "", saleValue: "", expectedProfit: "", moneyReceived: "", moneyDue: "", recipientName: "", expectedReceivableDate: "", channel: SALE_CHANNELS[0],
@@ -3886,15 +3943,21 @@ function ExpenseTab({ data, persist, registerActivity, setToast, triggerNoteAnim
     currency: "INR", foreignAmount: "", fxRate: "",
   });
 
+  const { from, to } = useMemo(() => computeDateRange(dateFilter, customFrom, customTo), [dateFilter, customFrom, customTo]);
+
   const sorted = useMemo(() => {
-    const s = [...data.expenses].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id);
-    if (!search.trim()) return s;
-    const q = search.trim().toLowerCase();
-    return s.filter((e) => e.category.toLowerCase().includes(q) || (e.note || "").toLowerCase().includes(q));
-  }, [data.expenses, search]);
-  const thisMonthTotal = useMemo(
-    () => data.expenses.filter((e) => monthKey(e.date) === currentMonthKey()).reduce((s, e) => s + e.amount, 0),
-    [data.expenses]
+    let s = [...data.expenses].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id);
+    if (from) s = s.filter((e) => e.date >= from);
+    if (to) s = s.filter((e) => e.date <= to);
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      s = s.filter((e) => e.category.toLowerCase().includes(q) || (e.note || "").toLowerCase().includes(q));
+    }
+    return s;
+  }, [data.expenses, search, from, to]);
+  const filteredTotal = useMemo(
+    () => sorted.reduce((s, e) => s + e.amount, 0),
+    [sorted]
   );
 
   const resetForm = () => setForm({
@@ -4077,11 +4140,13 @@ function ExpenseTab({ data, persist, registerActivity, setToast, triggerNoteAnim
   return (
     <div>
       <div style={S.heroCard}>
-        <div style={S.heroLabel}>EXPENSE THIS MONTH</div>
-        <div style={{ ...S.heroNum, color: T.orange }} className="tnum">{fmt(thisMonthTotal)}</div>
+        <div style={S.heroLabel}>EXPENSE — {dateFilterLabel(dateFilter, from, to)}</div>
+        <div style={{ ...S.heroNum, color: T.orange }} className="tnum">{fmt(filteredTotal)}</div>
       </div>
 
-      <div style={S.sectionHeadRow}>
+      <DateRangeFilter preset={dateFilter} setPreset={setDateFilter} customFrom={customFrom} setCustomFrom={setCustomFrom} customTo={customTo} setCustomTo={setCustomTo} />
+
+      <div style={{ ...S.sectionHeadRow, marginTop: 16 }}>
         <SectionLabel text={`ENTRIES — ${sorted.length}`} noMargin />
         <button style={S.addBtn} className="npop" onClick={() => setShowForm((s) => !s)}>
           {showForm ? <X size={14} /> : <Plus size={14} />} {showForm ? "CANCEL" : "ADD"}
