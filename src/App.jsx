@@ -8,7 +8,7 @@ import {
   Plus, Trash2, X, Loader2, Settings2, Check, Target, Flame, Award,
   ArrowDownCircle, ArrowUpCircle, Home, Wallet, ListChecks, Pin, Landmark,
   Calculator, Delete, RefreshCw, Layers, Trophy, Swords, Lock, BarChart3,
-  FileDown, FileSpreadsheet, Printer, Mic, Zap, Pencil,
+  FileDown, FileSpreadsheet, Printer, Mic, Zap, Pencil, TrendingUp, PackageCheck,
 } from "lucide-react";
 import rupee10 from "./assets/notes/rupee-10.jpg";
 import rupee20 from "./assets/notes/rupee-20.jpg";
@@ -188,7 +188,7 @@ function accountsOpeningTotal(data) {
 function computeNetWorthQuick(data) {
   const cashBalance = data.income.reduce((s, e) => s + e.amount, 0) - data.expenses.reduce((s, e) => s + e.amount, 0);
   const totalInvested = data.investments.reduce((s, i) => s + i.amount, 0);
-  const totalReceivable = data.receivables.filter((r) => r.status !== "received").reduce((s, r) => s + r.amount, 0);
+  const totalReceivable = data.receivables.filter((r) => r.status !== "received" && r.status !== "rto").reduce((s, r) => s + r.amount, 0);
   const totalPayable = data.payables.filter((p) => p.status !== "paid").reduce((s, p) => s + p.amount, 0);
   return data.openingBalance + accountsOpeningTotal(data) + cashBalance + totalInvested + totalReceivable - totalPayable;
 }
@@ -205,7 +205,7 @@ function buildReportText(data) {
   const curMonth = currentMonthKey();
   const monthIncome = data.income.filter((e) => monthKey(e.date) === curMonth).reduce((s, e) => s + e.amount, 0);
   const monthExpense = data.expenses.filter((e) => monthKey(e.date) === curMonth).reduce((s, e) => s + e.amount, 0);
-  const totalReceivable = data.receivables.filter((r) => r.status !== "received").reduce((s, r) => s + r.amount, 0);
+  const totalReceivable = data.receivables.filter((r) => r.status !== "received" && r.status !== "rto").reduce((s, r) => s + r.amount, 0);
   const totalPayable = data.payables.filter((p) => p.status !== "paid").reduce((s, p) => s + p.amount, 0);
   const recentRows = [...data.income.map((e) => ({ ...e, kind: "IN", label: e.source })), ...data.expenses.map((e) => ({ ...e, kind: "OUT", label: e.category }))]
     .sort((a, b) => b.date.localeCompare(a.date))
@@ -349,7 +349,7 @@ function computeHealthScore(data) {
   const fundTotal = Object.values(data.fundBalances).reduce((s, v) => s + v, 0);
   const fundScore = fundTotal > 0 ? 15 : 0;
 
-  const totalReceivable = data.receivables.filter((r) => r.status !== "received").reduce((s, r) => s + r.amount, 0);
+  const totalReceivable = data.receivables.filter((r) => r.status !== "received" && r.status !== "rto").reduce((s, r) => s + r.amount, 0);
   const totalPayable = data.payables.filter((p) => p.status !== "paid").reduce((s, p) => s + p.amount, 0);
   const debtScore = totalPayable === 0 ? 15 : Math.max(0, 15 - Math.min(15, ((totalPayable - totalReceivable) / Math.max(1, totalPayable)) * 15));
 
@@ -464,7 +464,7 @@ function computeCashFlowTimeline(data, windowDays = 30) {
   const startingCash = data.openingBalance + accountsOpeningTotal(data) + data.income.reduce((s, e) => s + e.amount, 0) - data.expenses.reduce((s, e) => s + e.amount, 0);
 
   const events = [];
-  (data.receivables || []).filter((r) => r.status !== "received" && r.dueDate && r.dueDate >= today && r.dueDate <= endDate)
+  (data.receivables || []).filter((r) => r.status !== "received" && r.status !== "rto" && r.dueDate && r.dueDate >= today && r.dueDate <= endDate)
     .forEach((r) => events.push({ date: r.dueDate, amount: r.amount, label: `${r.party} pays you`, type: "in" }));
   (data.payables || []).filter((p) => p.status !== "paid" && p.dueDate && p.dueDate >= today && p.dueDate <= endDate)
     .forEach((p) => events.push({ date: p.dueDate, amount: -p.amount, label: `pay ${p.party}`, type: "out" }));
@@ -1681,6 +1681,7 @@ export default function Khata() {
         {tab === "goals" && <GoalsTab data={data} persist={persist} />}
         {tab === "dues" && <DuesTab data={data} persist={persist} />}
         {tab === "accounts" && <AccountsTab data={data} persist={persist} />}
+        {tab === "investments" && <InvestmentsTab data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "pool" && <ExpensePoolTab data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "analytics" && <AnalyticsTab data={data} persist={persist} />}
         {tab === "hustle" && <HustleTab data={data} persist={persist} />}
@@ -1795,6 +1796,7 @@ function BottomNav({ tab, setTab }) {
     { id: "goals", label: "Goals", icon: Target },
     { id: "dues", label: "Dues", icon: ListChecks },
     { id: "accounts", label: "Accounts", icon: Landmark },
+    { id: "investments", label: "Invest", icon: TrendingUp },
     { id: "pool", label: "Pool", icon: Layers },
     { id: "analytics", label: "Stats", icon: BarChart3 },
     { id: "hustle", label: "Hustle", icon: Zap },
@@ -1836,7 +1838,7 @@ function OverviewTab({ data, persist, registerActivity, setToast, triggerNoteAni
 
   const cashBalance = data.income.reduce((s, e) => s + e.amount, 0) - data.expenses.reduce((s, e) => s + e.amount, 0);
   const totalInvested = data.investments.reduce((s, i) => s + i.amount, 0);
-  const totalReceivable = data.receivables.filter((r) => r.status !== "received").reduce((s, r) => s + r.amount, 0);
+  const totalReceivable = data.receivables.filter((r) => r.status !== "received" && r.status !== "rto").reduce((s, r) => s + r.amount, 0);
   const totalPayable = data.payables.filter((p) => p.status !== "paid").reduce((s, p) => s + p.amount, 0);
   const accountsBalance = accountsOpeningTotal(data);
   const netWorth = data.openingBalance + accountsBalance + cashBalance + totalInvested + totalReceivable - totalPayable;
@@ -1886,8 +1888,6 @@ function OverviewTab({ data, persist, registerActivity, setToast, triggerNoteAni
       <ReceivablesSummary data={data} totalReceivable={totalReceivable} />
 
       <BrokerHoldingsSection data={data} persist={persist} />
-
-      <InvestmentsSection data={data} persist={persist} totalInvested={totalInvested} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />
 
       <SinkingFundsSection data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />
 
@@ -2040,7 +2040,7 @@ function NetWorthFooter({ data, persist, netWorth, cashBalance, totalInvested, t
 }
 
 function ReceivablesSummary({ data, totalReceivable }) {
-  const pending = data.receivables.filter((r) => r.status !== "received").sort((a, b) => (a.dueDate || "9999") > (b.dueDate || "9999") ? 1 : -1);
+  const pending = data.receivables.filter((r) => r.status !== "received" && r.status !== "rto").sort((a, b) => (a.dueDate || "9999") > (b.dueDate || "9999") ? 1 : -1);
   return (
     <>
       <SectionLabel text="RECEIVABLES" />
@@ -2281,7 +2281,8 @@ function daysBetweenDates(a, b) {
   return Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);
 }
 
-function InvestmentsSection({ data, persist, totalInvested, registerActivity, setToast, triggerNoteAnim }) {
+function InvestmentsTab({ data, persist, registerActivity, setToast, triggerNoteAnim }) {
+  const totalInvested = data.investments.reduce((s, i) => s + i.amount, 0);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", amount: "", type: INVESTMENT_TYPES[0] });
   const [soldFor, setSoldFor] = useState(null); // investment being marked sold
@@ -3081,7 +3082,7 @@ function QuickActionsBar({ data, persist, registerActivity, setToast, triggerNot
   const [pick, setPick] = useState(INCOME_SOURCES[0]);
   const [note, setNote] = useState("");
   const [account, setAccount] = useState("none");
-  const [so, setSo] = useState({ itemName: "", qty: "", saleValue: "", expectedProfit: "", moneyReceived: "", moneyDue: "", recipientName: "", expectedReceivableDate: "", channel: SALE_CHANNELS[0] });
+  const [so, setSo] = useState({ itemName: "", qty: "", saleValue: "", expectedProfit: "", moneyReceived: "", moneyDue: "", recipientName: "", expectedReceivableDate: "", channel: SALE_CHANNELS[0], isCOD: false, minAmount: "" });
   const [co, setCo] = useState({ itemName: "", qty: "", itemValue: "", expectedSellingPrice: "", expectedProfit: "", expectedArrival: "" });
 
   const openMode = (m) => {
@@ -3090,7 +3091,7 @@ function QuickActionsBar({ data, persist, registerActivity, setToast, triggerNot
     setNote("");
     setAccount("none");
     setPick(m === "profit" ? INCOME_SOURCES[0] : m === "waste" ? WASTE_TYPES[0] : EXPENSE_CATEGORIES[0]);
-    setSo({ itemName: "", qty: "", saleValue: "", expectedProfit: "", moneyReceived: "", moneyDue: "", recipientName: "", expectedReceivableDate: "", channel: SALE_CHANNELS[0] });
+    setSo({ itemName: "", qty: "", saleValue: "", expectedProfit: "", moneyReceived: "", moneyDue: "", recipientName: "", expectedReceivableDate: "", channel: SALE_CHANNELS[0], isCOD: false, minAmount: "" });
     setCo({ itemName: "", qty: "", itemValue: "", expectedSellingPrice: "", expectedProfit: "", expectedArrival: "" });
   };
 
@@ -3124,7 +3125,10 @@ function QuickActionsBar({ data, persist, registerActivity, setToast, triggerNot
       };
       let next = registerActivity({ ...data, income: [...data.income, entry], fundBalances }, 5);
       if (due > 0) {
-        const receivable = { id: Date.now() + 1, party: so.recipientName || "buyer", amount: due, dueDate: so.expectedReceivableDate || null, note: `Sold order — sale ₹${so.saleValue || 0}`, status: "pending" };
+        const receivable = {
+          id: Date.now() + 1, party: so.recipientName || "buyer", amount: due, dueDate: so.expectedReceivableDate || null, note: `Sold order — sale ₹${so.saleValue || 0}`, status: "pending",
+          isCOD: so.isCOD, minAmount: so.isCOD && so.minAmount !== "" ? parseFloat(so.minAmount) || 0 : null,
+        };
         next = { ...next, receivables: [...next.receivables, receivable] };
       }
       next = withAccountMovement(next, account, "in", received, `Sold order — ${so.itemName || so.recipientName || "buyer"}`, today);
@@ -3242,6 +3246,17 @@ function QuickActionsBar({ data, persist, registerActivity, setToast, triggerNot
             <AmountInput placeholder="money received" value={so.moneyReceived} onChange={(v) => setSo({ ...so, moneyReceived: v })} style={S.input} className="tnum" />
             <AmountInput placeholder="money due" value={so.moneyDue} onChange={(v) => setSo({ ...so, moneyDue: v })} style={S.input} className="tnum" />
           </div>
+          {parseFloat(so.moneyDue) > 0 && (
+            <>
+              <label style={S.checkboxRow}>
+                <input type="checkbox" checked={so.isCOD} onChange={(e) => setSo({ ...so, isCOD: e.target.checked })} />
+                COD ORDER — MIGHT COME BACK AS RTO
+              </label>
+              {so.isCOD && (
+                <AmountInput placeholder="minimum you'll still get if it RTOs (optional)" value={so.minAmount} onChange={(v) => setSo({ ...so, minAmount: v })} style={{ ...S.input, width: "100%" }} className="tnum" />
+              )}
+            </>
+          )}
           <select value={account} onChange={(e) => setAccount(e.target.value)} style={S.select}>
             {ACCOUNT_OPTIONS.map((a) => <option key={a.id} value={a.id}>{a.id === "none" ? a.label : `MONEY RECEIVED → ${a.label}`}</option>)}
           </select>
@@ -4563,7 +4578,7 @@ function GoalsTab({ data, persist }) {
 
 function DuesTab({ data, persist }) {
   const [subTab, setSubTab] = useState("receivable");
-  const [form, setForm] = useState({ party: "", amount: "", purpose: "personal", dueDate: "", note: "" });
+  const [form, setForm] = useState({ party: "", amount: "", purpose: "personal", dueDate: "", note: "", isCOD: false, minAmount: "" });
   const [showForm, setShowForm] = useState(false);
   const [openParty, setOpenParty] = useState(null);
   const [editingId, setEditingId] = useState(null);
@@ -4572,25 +4587,45 @@ function DuesTab({ data, persist }) {
   const list = subTab === "receivable" ? data.receivables : data.payables;
   const key = subTab === "receivable" ? "receivables" : "payables";
   const doneStatus = subTab === "receivable" ? "received" : "paid";
+  // "rto" only exists for receivables — a COD order that came back instead of paying out
+  const excludedStatuses = subTab === "receivable" ? [doneStatus, "rto"] : [doneStatus];
 
   const addEntry = () => {
     const amt = parseFloat(form.amount);
     if (!form.party.trim() || !amt || amt <= 0) return;
-    const entry = { id: Date.now(), party: form.party.trim(), amount: amt, purpose: form.purpose, dueDate: form.dueDate || null, note: form.note.trim(), status: "pending" };
+    const entry = {
+      id: Date.now(), party: form.party.trim(), amount: amt, purpose: form.purpose, dueDate: form.dueDate || null, note: form.note.trim(), status: "pending",
+      isCOD: subTab === "receivable" ? form.isCOD : false,
+      minAmount: subTab === "receivable" && form.isCOD && form.minAmount !== "" ? parseFloat(form.minAmount) || 0 : null,
+    };
     persist({ ...data, [key]: [...list, entry] });
-    setForm({ party: "", amount: "", purpose: "personal", dueDate: "", note: "" });
+    setForm({ party: "", amount: "", purpose: "personal", dueDate: "", note: "", isCOD: false, minAmount: "" });
     setShowForm(false);
     setOpenParty(entry.party);
   };
   const toggleStatus = (id) => {
     persist({ ...data, [key]: list.map((e) => (e.id === id ? { ...e, status: e.status === doneStatus ? "pending" : doneStatus } : e)) });
   };
+  // A COD order that RTO'd never pays out — the goods physically came back instead, so this
+  // resolves the receivable (without pretending it was paid) and books the return as inventory
+  // you can resell, using the receivable's expected amount as the stock's assumed value.
+  const markRTO = (entry) => {
+    const investment = {
+      id: Date.now(), name: `RTO — ${entry.party}${entry.note ? ` (${entry.note})` : ""}`, amount: entry.amount,
+      date: todayISO(), investmentType: "Inventory Stock", status: "in_stock", source: "rto_return",
+    };
+    persist({
+      ...data,
+      receivables: data.receivables.map((r) => (r.id === entry.id ? { ...r, status: "rto" } : r)),
+      investments: [...data.investments, investment],
+    });
+  };
   const removeEntry = (id) => persist({ ...data, [key]: list.filter((e) => e.id !== id) });
-  const totalPending = list.filter((e) => e.status !== doneStatus).reduce((s, e) => s + e.amount, 0);
+  const totalPending = list.filter((e) => !excludedStatuses.includes(e.status)).reduce((s, e) => s + e.amount, 0);
 
   const startEdit = (e) => {
     setEditingId(e.id);
-    setEditValues({ party: e.party, amount: String(e.amount), purpose: e.purpose || "personal", dueDate: e.dueDate || "", note: e.note || "" });
+    setEditValues({ party: e.party, amount: String(e.amount), purpose: e.purpose || "personal", dueDate: e.dueDate || "", note: e.note || "", isCOD: e.isCOD ? "yes" : "no", minAmount: e.minAmount != null ? String(e.minAmount) : "" });
   };
   const saveEdit = () => {
     const amt = parseFloat(editValues.amount);
@@ -4599,7 +4634,10 @@ function DuesTab({ data, persist }) {
       ...data,
       [key]: list.map((e) =>
         e.id === editingId
-          ? { ...e, party: editValues.party.trim(), amount: amt, purpose: editValues.purpose, dueDate: editValues.dueDate || null, note: editValues.note.trim() }
+          ? {
+              ...e, party: editValues.party.trim(), amount: amt, purpose: editValues.purpose, dueDate: editValues.dueDate || null, note: editValues.note.trim(),
+              ...(subTab === "receivable" ? { isCOD: editValues.isCOD === "yes", minAmount: editValues.isCOD === "yes" && editValues.minAmount !== "" ? parseFloat(editValues.minAmount) || 0 : null } : {}),
+            }
           : e
       ),
     });
@@ -4617,11 +4655,11 @@ function DuesTab({ data, persist }) {
       .map(([party, entries]) => ({
         party,
         entries: entries.sort((a, b) => b.id - a.id),
-        totalPending: entries.filter((e) => e.status !== doneStatus).reduce((s, e) => s + e.amount, 0),
+        totalPending: entries.filter((e) => !excludedStatuses.includes(e.status)).reduce((s, e) => s + e.amount, 0),
         totalAll: entries.reduce((s, e) => s + e.amount, 0),
       }))
       .sort((a, b) => b.totalPending - a.totalPending);
-  }, [list, doneStatus]);
+  }, [list, doneStatus, excludedStatuses]);
 
   return (
     <div>
@@ -4654,10 +4692,21 @@ function DuesTab({ data, persist }) {
             <button style={{ ...S.toggleBtn, flex: 1, ...(form.purpose === "business" ? { background: T.blue, color: T.bg } : {}) }} onClick={() => setForm({ ...form, purpose: "business" })}>BUSINESS</button>
           </div>
           <div style={S.formRow}>
-            <AmountInput placeholder="amount" value={form.amount} onChange={(v) => setForm({ ...form, amount: v })} style={S.input} className="tnum" />
+            <AmountInput placeholder={subTab === "receivable" ? "amount expected" : "amount"} value={form.amount} onChange={(v) => setForm({ ...form, amount: v })} style={S.input} className="tnum" />
             <input type="date" placeholder={subTab === "receivable" ? "expected date of receiving" : "expected date of paying"} value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} style={S.input} className="tnum" />
           </div>
           <input type="text" placeholder="note (optional)" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} style={{ ...S.input, width: "100%" }} />
+          {subTab === "receivable" && (
+            <>
+              <label style={S.checkboxRow}>
+                <input type="checkbox" checked={form.isCOD} onChange={(e) => setForm({ ...form, isCOD: e.target.checked })} />
+                COD ORDER — MIGHT COME BACK AS RTO
+              </label>
+              {form.isCOD && (
+                <AmountInput placeholder="minimum you'll still get if it RTOs (optional)" value={form.minAmount} onChange={(v) => setForm({ ...form, minAmount: v })} style={{ ...S.input, width: "100%" }} className="tnum" />
+              )}
+            </>
+          )}
           <button style={S.submitBtnGreen} className="npop" onClick={addEntry}>SAVE</button>
         </div>
       )}
@@ -4681,23 +4730,35 @@ function DuesTab({ data, persist }) {
               {isOpen && (
                 <div style={S.expandPanel} onClick={(e) => e.stopPropagation()}>
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {g.entries.map((e) => (
+                    {g.entries.map((e) => {
+                      const isResolved = e.status !== "pending";
+                      const isRTO = e.status === "rto";
+                      return (
                       <div key={e.id} style={S.ledgerRow}>
                         <div style={S.ledgerMain}>
-                          <div style={{ ...S.ledgerCategory, textDecoration: e.status === doneStatus ? "line-through" : "none", opacity: e.status === doneStatus ? 0.5 : 1 }}>
+                          <div style={{ ...S.ledgerCategory, textDecoration: isResolved ? "line-through" : "none", opacity: isResolved ? 0.5 : 1 }}>
                             {e.purpose && <span style={{ ...S.fineTag, color: e.purpose === "business" ? T.blue : T.purple, borderColor: e.purpose === "business" ? T.blue : T.purple, marginLeft: 0, marginRight: 6 }}>{e.purpose.toUpperCase()}</span>}
+                            {e.isCOD && <span style={{ ...S.fineTag, color: T.gold, borderColor: T.gold, marginLeft: 0, marginRight: 6 }}>COD</span>}
+                            {isRTO && <span style={{ ...S.fineTag, marginLeft: 0, marginRight: 6 }}>RTO'D → INVENTORY</span>}
                             {e.note || "—"}
                           </div>
                           {e.dueDate && <div style={S.ledgerNote}>EXPECTED {fmtDate(e.dueDate)}</div>}
+                          {e.isCOD && e.minAmount != null && (
+                            <div style={S.ledgerNote}>MIN {fmt(e.minAmount)} IF RTO</div>
+                          )}
                         </div>
-                        <div style={{ ...S.ledgerAmt, color, opacity: e.status === doneStatus ? 0.5 : 1 }} className="tnum">{fmt(e.amount)}</div>
+                        <div style={{ ...S.ledgerAmt, color, opacity: isResolved ? 0.5 : 1 }} className="tnum">{fmt(e.amount)}</div>
+                        {subTab === "receivable" && e.status === "pending" && (
+                          <button style={S.editBtn} title="RTO — turn into inventory" onClick={(ev) => { ev.stopPropagation(); markRTO(e); }}><PackageCheck size={13} color={T.orange} /></button>
+                        )}
                         <button style={S.smallToggle} onClick={(ev) => { ev.stopPropagation(); toggleStatus(e.id); }}>
                           <Check size={12} color={e.status === doneStatus ? T.green : T.muted} />
                         </button>
                         <button style={S.editBtn} onClick={(ev) => { ev.stopPropagation(); startEdit(e); }}><Pencil size={12} color={T.muted} /></button>
                         <button style={S.deleteBtn} onClick={(ev) => { ev.stopPropagation(); removeEntry(e.id); }}><Trash2 size={13} color={T.muted} /></button>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -4715,10 +4776,14 @@ function DuesTab({ data, persist }) {
           onCancel={() => { setEditingId(null); setEditValues(null); }}
           fields={[
             { key: "party", type: "text", label: subTab === "receivable" ? "who owes you" : "who you owe" },
-            { key: "amount", type: "amount", label: "amount" },
+            { key: "amount", type: "amount", label: subTab === "receivable" ? "amount expected" : "amount" },
             { key: "purpose", type: "select", label: "purpose", options: [{ value: "personal", label: "PERSONAL" }, { value: "business", label: "BUSINESS" }] },
             { key: "dueDate", type: "date", label: "expected date" },
             { key: "note", type: "text", label: "note (optional)" },
+            ...(subTab === "receivable" ? [
+              { key: "isCOD", type: "select", label: "COD order?", options: [{ value: "no", label: "NOT COD" }, { value: "yes", label: "COD — MIGHT RTO" }] },
+              { key: "minAmount", type: "amount", label: "minimum if RTO (optional)" },
+            ] : []),
           ]}
         />
       )}
@@ -5757,13 +5822,13 @@ function AnalyticsTab({ data, persist }) {
 
   const cashBalance = totalIncome - totalExpense;
   const totalInvested = data.investments.reduce((s, i) => s + i.amount, 0);
-  const totalReceivable = data.receivables.filter((r) => r.status !== "received").reduce((s, r) => s + r.amount, 0);
+  const totalReceivable = data.receivables.filter((r) => r.status !== "received" && r.status !== "rto").reduce((s, r) => s + r.amount, 0);
   const totalPayable = data.payables.filter((p) => p.status !== "paid").reduce((s, p) => s + p.amount, 0);
   const netWorth = computeNetWorthQuick(data);
 
   const avgTxnSize = data.expenses.length > 0 ? totalExpense / data.expenses.length : 0;
   const debtToIncomeRatio = totalIncome > 0 ? Math.round((totalPayable / totalIncome) * 1000) / 10 : 0;
-  const oldestReceivable = [...data.receivables].filter((r) => r.status !== "received").sort((a, b) => a.id - b.id)[0];
+  const oldestReceivable = [...data.receivables].filter((r) => r.status !== "received" && r.status !== "rto").sort((a, b) => a.id - b.id)[0];
   const ageingDays = oldestReceivable ? daysBetween(oldestReceivable.dueDate || todayISO(), todayISO()) : null;
 
   // 6-month trend
@@ -5975,7 +6040,7 @@ function AnalyticsTab({ data, persist }) {
     const dailyBurn = recentExpense / 30;
     const in30Days = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
     const today30 = todayISO();
-    const expectedReceivables = data.receivables.filter((r) => r.status !== "received" && r.dueDate && r.dueDate >= today30 && r.dueDate <= in30Days).reduce((s, r) => s + r.amount, 0);
+    const expectedReceivables = data.receivables.filter((r) => r.status !== "received" && r.status !== "rto" && r.dueDate && r.dueDate >= today30 && r.dueDate <= in30Days).reduce((s, r) => s + r.amount, 0);
     const expectedPayables = data.payables.filter((p) => p.status !== "paid" && p.dueDate && p.dueDate >= today30 && p.dueDate <= in30Days).reduce((s, p) => s + p.amount, 0);
     const projectedBalance = cashBalance + expectedReceivables - expectedPayables - dailyBurn * 30;
     return { dailyBurn, expectedReceivables, expectedPayables, projectedBalance };
@@ -6137,7 +6202,7 @@ function AnalyticsTab({ data, persist }) {
     });
     return Object.entries(buckets).map(([name, value]) => ({ name, value: Math.round(value) })).filter((b) => b.value > 0);
   };
-  const receivablesAging = useMemo(() => agingBuckets(data.receivables.filter((r) => r.status !== "received")), [data.receivables]);
+  const receivablesAging = useMemo(() => agingBuckets(data.receivables.filter((r) => r.status !== "received" && r.status !== "rto")), [data.receivables]);
   const payablesAging = useMemo(() => agingBuckets(data.payables.filter((p) => p.status !== "paid")), [data.payables]);
 
   // fund goal progress — every active goal's completion %, as a radial ring race
