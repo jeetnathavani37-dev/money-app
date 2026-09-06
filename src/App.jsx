@@ -5762,6 +5762,54 @@ function AnalyticsTab({ data, persist }) {
     return Object.entries(map).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value }));
   }, [data.income]);
 
+  // % of named customers who bought more than once — retention, not just volume
+  const repeatCustomerRate = useMemo(() => {
+    const counts = {};
+    data.income.filter((e) => e.customerName).forEach((e) => { counts[e.customerName] = (counts[e.customerName] || 0) + 1; });
+    const names = Object.keys(counts);
+    if (!names.length) return null;
+    const repeat = names.filter((n) => counts[n] >= 2).length;
+    return { pct: Math.round((repeat / names.length) * 1000) / 10, repeat, total: names.length };
+  }, [data.income]);
+
+  // lifetime career stats — the whole ledger's history, not a rolling window
+  const lifetimeStats = useMemo(() => {
+    const byMonth = {};
+    data.income.forEach((e) => { byMonth[monthKey(e.date)] = (byMonth[monthKey(e.date)] || 0) + e.amount; });
+    data.expenses.forEach((e) => { byMonth[monthKey(e.date)] = (byMonth[monthKey(e.date)] || 0) - e.amount; });
+    const monthEntries = Object.entries(byMonth);
+    const bestMonth = monthEntries.length ? monthEntries.sort((a, b) => b[1] - a[1])[0] : null;
+    const allDates = [...data.income.map((e) => e.date), ...data.expenses.map((e) => e.date)].sort();
+    const firstDate = allDates[0] || null;
+    return {
+      totalProfitEver: totalIncome - totalExpense,
+      totalOrders: data.income.filter((e) => e.source === "Sold Order").length,
+      uniqueCustomers: new Set(data.income.filter((e) => e.customerName).map((e) => e.customerName)).size,
+      daysActive: firstDate ? daysBetween(firstDate, todayISO()) + 1 : 0,
+      bestMonth: bestMonth ? { key: bestMonth[0], profit: bestMonth[1] } : null,
+    };
+  }, [data.income, data.expenses, totalIncome, totalExpense]);
+
+  // which weekday historically makes the most (or least) profit — averaged, not summed, so a
+  // single big Friday doesn't drown out months of data
+  const weekdayPerformance = useMemo(() => {
+    const LABELS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+    const totals = [0, 0, 0, 0, 0, 0, 0];
+    const counts = [0, 0, 0, 0, 0, 0, 0];
+    const byDate = {};
+    data.income.forEach((e) => { byDate[e.date] = (byDate[e.date] || 0) + e.amount; });
+    data.expenses.forEach((e) => { byDate[e.date] = (byDate[e.date] || 0) - e.amount; });
+    Object.entries(byDate).forEach(([date, profit]) => {
+      const dow = new Date(date + "T00:00:00").getDay();
+      totals[dow] += profit;
+      counts[dow] += 1;
+    });
+    const rows = LABELS.map((day, i) => ({ day, avg: counts[i] > 0 ? totals[i] / counts[i] : null, days: counts[i] }))
+      .filter((r) => r.avg !== null)
+      .sort((a, b) => b.avg - a.avg);
+    return rows;
+  }, [data.income, data.expenses]);
+
   // month-by-month P&L — COGS is the sourcing/shipping/packaging categories, everything
   // else non-waste is opex, waste gets its own line so it doesn't hide inside "expenses"
   const pnlByMonth = useMemo(() => {
@@ -5957,6 +6005,31 @@ function AnalyticsTab({ data, persist }) {
     <div>
       <ExportSection data={data} />
 
+      <SectionLabel text="LIFETIME" noMargin />
+      <div style={S.statGrid}>
+        <div style={S.statBox}>
+          <div style={S.statBoxLabel}>TOTAL PROFIT EVER</div>
+          <div style={{ ...S.statBoxNum, color: lifetimeStats.totalProfitEver >= 0 ? T.green : T.orange }} className="tnum">{fmtSigned(lifetimeStats.totalProfitEver)}</div>
+        </div>
+        <div style={S.statBox}>
+          <div style={S.statBoxLabel}>ORDERS SOLD</div>
+          <div style={{ ...S.statBoxNum, color: T.ivory }} className="tnum">{lifetimeStats.totalOrders}</div>
+        </div>
+        <div style={S.statBox}>
+          <div style={S.statBoxLabel}>CUSTOMERS SERVED</div>
+          <div style={{ ...S.statBoxNum, color: T.ivory }} className="tnum">{lifetimeStats.uniqueCustomers}</div>
+        </div>
+        <div style={S.statBox}>
+          <div style={S.statBoxLabel}>DAYS ACTIVE</div>
+          <div style={{ ...S.statBoxNum, color: T.ivory }} className="tnum">{lifetimeStats.daysActive}</div>
+        </div>
+      </div>
+      {lifetimeStats.bestMonth && (
+        <div style={{ fontSize: 11, color: T.gold, fontWeight: 700, marginTop: 8, marginBottom: 4 }} className="tnum">
+          🏆 BEST MONTH EVER — {monthLabel(lifetimeStats.bestMonth.key).toUpperCase()} AT {fmt(lifetimeStats.bestMonth.profit)}
+        </div>
+      )}
+
       <SectionLabel text="CASH FLOW" noMargin />
       <div style={S.statGrid}>
         <div style={S.statBox}>
@@ -6011,6 +6084,24 @@ function AnalyticsTab({ data, persist }) {
           <Line type="monotone" dataKey="profit" stroke={T.purple} strokeWidth={2.5} dot={{ r: 2.5 }} name="Profit" />
         </LineChart>
       </ChartCard>
+
+      {weekdayPerformance.length > 0 && (
+        <>
+          <SectionLabel text="BEST DAY TO SELL" />
+          <div style={{ fontSize: 11, color: T.muted, marginBottom: 8, marginTop: -6 }}>AVERAGE PROFIT PER DAY, BY WEEKDAY — NOT TOTAL, SO ONE BIG DAY DOESN'T SKEW IT</div>
+          <div style={S.ledger}>
+            {weekdayPerformance.map((r, i) => (
+              <div key={r.day} style={S.ledgerRow}>
+                <div style={S.ledgerMain}>
+                  <div style={S.ledgerCategory}>{i === 0 ? `🏆 ${r.day}` : r.day}</div>
+                  <div style={S.ledgerNote}>{r.days} DAY{r.days === 1 ? "" : "S"} LOGGED</div>
+                </div>
+                <div style={{ ...S.ledgerAmt, color: r.avg >= 0 ? (i === 0 ? T.gold : T.green) : T.orange }} className="tnum">{fmtSigned(r.avg)}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       <SectionLabel text="NET WORTH HISTORY" />
       <ChartCard title="6-MONTH NET WORTH TREND">
@@ -6147,6 +6238,11 @@ function AnalyticsTab({ data, persist }) {
       {topCustomers.length > 0 && (
         <>
           <SectionLabel text="TOP CUSTOMERS" />
+          {repeatCustomerRate && (
+            <div style={{ fontSize: 11, color: T.muted, marginBottom: 8, marginTop: -6 }} className="tnum">
+              <b style={{ color: T.gold }}>{repeatCustomerRate.pct}%</b> repeat buyers — {repeatCustomerRate.repeat} of {repeatCustomerRate.total} customers came back for more
+            </div>
+          )}
           <div style={S.ledger}>
             {topCustomers.map((c) => (
               <div key={c.name} style={S.ledgerRow}>
