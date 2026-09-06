@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   PieChart, Pie, Cell, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend,
+  AreaChart, Area, ComposedChart, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
+  Treemap, ScatterChart, Scatter, ZAxis, RadialBarChart, RadialBar,
 } from "recharts";
 import {
   Plus, Trash2, X, Loader2, Settings2, Check, Target, Flame, Award,
@@ -501,10 +503,19 @@ const computeAvgSale = (data, sinceDays = 90) => {
   if (recent.length === 0) return null;
   return recent.reduce((s, e) => s + e.amount, 0) / recent.length;
 };
+// Average REVENUE per sale (not profit) — for "X sales of ~₹Y revenue" tips, which need
+// sale-price-sized numbers, not the much smaller per-sale profit computeAvgSale gives.
+const computeAvgSaleValue = (data, sinceDays = 90) => {
+  const cutoff = new Date(Date.now() - sinceDays * 86400000).toISOString().slice(0, 10);
+  const recent = data.income.filter((e) => e.date >= cutoff && e.source === "Sold Order" && e.saleValue > 0);
+  if (recent.length === 0) return null;
+  return recent.reduce((s, e) => s + e.saleValue, 0) / recent.length;
+};
+// Returns [] (rather than a fabricated "1 sale of the whole target" guess) when there isn't
+// enough real sales history yet — an honest empty state beats a wildly unrealistic number.
 const smartReachTips = (remaining, avgSale) => {
-  if (remaining <= 0) return [];
-  const base = avgSale && avgSale > 0 ? avgSale : remaining;
-  const mid = Math.max(1, Math.round(remaining / base));
+  if (remaining <= 0 || !avgSale || avgSale <= 0) return [];
+  const mid = Math.max(1, Math.round(remaining / avgSale));
   const counts = Array.from(new Set([Math.max(1, Math.round(mid / 2)), mid, mid * 2])).sort((a, b) => a - b);
   return counts.map((n) => ({ count: n, each: remaining / n }));
 };
@@ -3348,7 +3359,9 @@ function ProfitTargetsSection({ data, persist, todayProfit, weekProfit, monthPro
                       <>
                         <div style={S.expandLabel}>HOW TO REACH IT{avgSale ? " (BASED ON YOUR AVG SALE)" : ""}</div>
                         <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 10 }}>
-                          {smartReachTips(remaining, avgSale).map((t) => (
+                          {smartReachTips(remaining, avgSale).length === 0 ? (
+                            <div style={{ fontSize: 11, color: T.muted }}>log a few sales to unlock a personalized breakdown</div>
+                          ) : smartReachTips(remaining, avgSale).map((t) => (
                             <div key={t.count} style={{ fontSize: 11.5, color: T.ivory }} className="tnum">
                               → {t.count} SALE{t.count > 1 ? "S" : ""} OF ~{fmt(t.each)} PROFIT{t.count > 1 ? " EACH" : ""}
                             </div>
@@ -3404,7 +3417,9 @@ function MiniGoalCard({ data: g, fund, fundBal, appData }) {
         <div style={S.expandPanel} onClick={(e) => e.stopPropagation()}>
           <div style={S.expandLabel}>HOW TO REACH IT</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-            {smartReachTips(salesNeeded, appData ? computeAvgSale(appData) : null).map((t) => (
+            {smartReachTips(salesNeeded, appData ? computeAvgSaleValue(appData) : null).length === 0 ? (
+              <div style={{ fontSize: 11, color: T.muted }}>log a few sales to unlock a personalized breakdown</div>
+            ) : smartReachTips(salesNeeded, appData ? computeAvgSaleValue(appData) : null).map((t) => (
               <div key={t.count} style={{ fontSize: 11.5, color: T.ivory }} className="tnum">
                 → {t.count} SALE{t.count > 1 ? "S" : ""} OF ~{fmt(t.each)} REVENUE{t.count > 1 ? " EACH" : ""}
               </div>
@@ -3548,7 +3563,9 @@ function DreamGoalCard({ data, persist, goal, fundId, label }) {
           )}
           <div style={S.expandLabel}>HOW TO REACH IT (~{MARGIN_PCT}% MARGIN)</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-            {smartReachTips(salesNeeded, computeAvgSale(data)).map((t) => (
+            {smartReachTips(salesNeeded, computeAvgSaleValue(data)).length === 0 ? (
+              <div style={{ fontSize: 11, color: T.muted }}>log a few sales to unlock a personalized breakdown</div>
+            ) : smartReachTips(salesNeeded, computeAvgSaleValue(data)).map((t) => (
               <div key={t.count} style={{ fontSize: 11.5, color: T.ivory }} className="tnum">
                 → {t.count} SALE{t.count > 1 ? "S" : ""} OF ~{fmt(t.each)} REVENUE{t.count > 1 ? " EACH" : ""}
               </div>
@@ -4510,7 +4527,9 @@ function GoalsTab({ data, persist }) {
                   )}
                   <div style={S.expandLabel}>HOW TO REACH IT</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                    {smartReachTips(salesNeeded, computeAvgSale(data)).map((t) => (
+                    {smartReachTips(salesNeeded, computeAvgSaleValue(data)).length === 0 ? (
+                      <div style={{ fontSize: 11, color: T.muted }}>log a few sales to unlock a personalized breakdown</div>
+                    ) : smartReachTips(salesNeeded, computeAvgSaleValue(data)).map((t) => (
                       <div key={t.count} style={{ fontSize: 11.5, color: T.ivory }} className="tnum">
                         → {t.count} SALE{t.count > 1 ? "S" : ""} OF ~{fmt(t.each)} REVENUE{t.count > 1 ? " EACH" : ""}
                       </div>
@@ -5673,6 +5692,22 @@ function ExportSection({ data }) {
   );
 }
 
+function ExpenseTreemapCell(props) {
+  const { x, y, width, height, name, value, fill } = props;
+  const showLabel = width > 45 && height > 24;
+  return (
+    <g>
+      <rect x={x} y={y} width={width} height={height} style={{ fill: fill || T.orange, stroke: T.bg, strokeWidth: 2 }} rx={4} />
+      {showLabel && (
+        <>
+          <text x={x + 8} y={y + 18} fill={T.bg} fontSize={10.5} fontWeight={700} fontFamily="'Space Grotesk', sans-serif">{name}</text>
+          <text x={x + 8} y={y + 33} fill={T.bg} fontSize={10} fontFamily="'Space Grotesk', sans-serif" opacity={0.8}>{fmt(value)}</text>
+        </>
+      )}
+    </g>
+  );
+}
+
 function ChartCard({ title, children, height = 200 }) {
   return (
     <div style={S.heroCard}>
@@ -6001,6 +6036,115 @@ function AnalyticsTab({ data, persist }) {
   const avgProfitPerSale = soldOrders.length > 0 ? soldOrders.reduce((s, e) => s + e.amount, 0) / soldOrders.length : 0;
   const monthlyWaste = data.expenses.filter((e) => e.unnecessary && monthKey(e.date) === cur).reduce((s, e) => s + e.amount, 0);
 
+  // cumulative lifetime profit — running total day by day, for a "trajectory" area chart
+  const cumulativeProfitSeries = useMemo(() => {
+    const byDate = {};
+    data.income.forEach((e) => { byDate[e.date] = (byDate[e.date] || 0) + e.amount; });
+    data.expenses.forEach((e) => { byDate[e.date] = (byDate[e.date] || 0) - e.amount; });
+    const dates = Object.keys(byDate).sort();
+    let running = 0;
+    return dates.map((date) => {
+      running += byDate[date];
+      return { label: fmtDateShort(date), cumulative: Math.round(running) };
+    });
+  }, [data.income, data.expenses]);
+
+  // business health radar — five 0-100 vitals in one shape
+  const healthRadar = useMemo(() => {
+    const clamp = (n) => Math.max(0, Math.min(100, Math.round(n)));
+    return [
+      { vital: "MARGIN", value: clamp(profitMargin) },
+      { vital: "SAVINGS", value: clamp(savingsRate) },
+      { vital: "DISCIPLINE", value: clamp(100 - wasteRatio) },
+      { vital: "STREAK", value: clamp((data.streak.count || 0) * 6.5) },
+      { vital: "GROWTH", value: clamp(incomeGrowth === null ? 50 : 50 + incomeGrowth / 2) },
+    ];
+  }, [profitMargin, savingsRate, wasteRatio, data.streak, incomeGrowth]);
+
+  // order economics — every sold order's sale value vs profit, so you can see which size/channel
+  // of sale is actually most profitable, not just which is biggest
+  const orderEconomics = useMemo(() => {
+    return data.income
+      .filter((e) => e.source === "Sold Order" && e.saleValue > 0)
+      .map((e) => ({ saleValue: e.saleValue, profit: e.amount, channel: e.channel || "unknown" }));
+  }, [data.income]);
+  const CHANNEL_COLORS = { instagram: T.purple, website: T.green, whatsapp: T.blue, other: T.orange, unknown: T.muted };
+
+  // monthly order volume + average order value — separate from revenue, since a business can
+  // sell more orders at a shrinking AOV without the revenue trend making that obvious
+  const orderVolumeSeries = useMemo(() => {
+    const months = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date();
+      d.setMonth(d.getMonth() - i);
+      const mk = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const monthOrders = data.income.filter((e) => e.source === "Sold Order" && monthKey(e.date) === mk);
+      const totalSaleValue = monthOrders.reduce((s, e) => s + (e.saleValue || 0), 0);
+      months.push({
+        month: d.toLocaleDateString("en-IN", { month: "short", year: "2-digit" }),
+        orders: monthOrders.length,
+        aov: monthOrders.length > 0 ? Math.round(totalSaleValue / monthOrders.length) : 0,
+      });
+    }
+    return months;
+  }, [data.income]);
+
+  // waste as its own trend — separate from total expense so discipline is visible on its own axis
+  const wasteTrendSeries = useMemo(() => {
+    const months = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date();
+      d.setMonth(d.getMonth() - i);
+      const mk = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const waste = data.expenses.filter((e) => e.unnecessary && monthKey(e.date) === mk).reduce((s, e) => s + e.amount, 0);
+      months.push({ month: d.toLocaleDateString("en-IN", { month: "short", year: "2-digit" }), waste: Math.round(waste) });
+    }
+    return months;
+  }, [data.expenses]);
+
+  // profit (not revenue) by channel — a channel can move the most revenue and still be the
+  // worst earner once you look at what it actually nets
+  const profitByChannel = useMemo(() => {
+    const map = {};
+    data.income.filter((e) => e.source === "Sold Order" && e.channel).forEach((e) => {
+      map[e.channel] = (map[e.channel] || 0) + e.amount;
+    });
+    return Object.entries(map).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).map(([name, value], i) => ({ name, value, color: CHANNEL_COLORS[name] || [T.green, T.purple, T.blue, T.orange, T.gold][i % 5] }));
+  }, [data.income]);
+
+  // receivables/payables aging buckets — a standard AR/AP report, not covered anywhere yet
+  const agingBuckets = (list, dateField = "dueDate") => {
+    const buckets = { "NOT DUE": 0, "0-7D": 0, "8-15D": 0, "16-30D": 0, "30D+": 0 };
+    const today = todayISO();
+    list.forEach((item) => {
+      const overdueDays = item[dateField] ? daysBetween(item[dateField], today) : 0;
+      if (!item[dateField] || item[dateField] > today) buckets["NOT DUE"] += item.amount;
+      else if (overdueDays <= 7) buckets["0-7D"] += item.amount;
+      else if (overdueDays <= 15) buckets["8-15D"] += item.amount;
+      else if (overdueDays <= 30) buckets["16-30D"] += item.amount;
+      else buckets["30D+"] += item.amount;
+    });
+    return Object.entries(buckets).map(([name, value]) => ({ name, value: Math.round(value) })).filter((b) => b.value > 0);
+  };
+  const receivablesAging = useMemo(() => agingBuckets(data.receivables.filter((r) => r.status !== "received")), [data.receivables]);
+  const payablesAging = useMemo(() => agingBuckets(data.payables.filter((p) => p.status !== "paid")), [data.payables]);
+
+  // fund goal progress — every active goal's completion %, as a radial ring race
+  const fundGoalProgress = useMemo(() => {
+    return data.goals
+      .map((g) => {
+        const bal = data.fundBalances[g.fundId] || 0;
+        const fund = data.funds.find((f) => f.id === g.fundId);
+        return { name: g.name.length > 14 ? g.name.slice(0, 14) + "…" : g.name, pct: Math.min(100, Math.round((bal / g.target) * 100)), fill: fund?.color || T.green };
+      })
+      .filter((g) => g.pct < 100)
+      .sort((a, b) => b.pct - a.pct)
+      .slice(0, 5);
+  }, [data.goals, data.fundBalances, data.funds]);
+
+  // expense category treemap — proportion is easier to eyeball as area than as bar length
+  const expenseTreemapData = useMemo(() => topExpenseCats.map((c, i) => ({ ...c, fill: [T.orange, T.purple, T.blue, T.gold, T.green, T.muted][i % 6] })), [topExpenseCats]);
+
   return (
     <div>
       <ExportSection data={data} />
@@ -6084,6 +6228,24 @@ function AnalyticsTab({ data, persist }) {
           <Line type="monotone" dataKey="profit" stroke={T.purple} strokeWidth={2.5} dot={{ r: 2.5 }} name="Profit" />
         </LineChart>
       </ChartCard>
+
+      {cumulativeProfitSeries.length > 1 && (
+        <ChartCard title="LIFETIME PROFIT TRAJECTORY">
+          <AreaChart data={cumulativeProfitSeries}>
+            <defs>
+              <linearGradient id="cumulativeProfitFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={T.green} stopOpacity={0.45} />
+                <stop offset="100%" stopColor={T.green} stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid stroke={T.line} vertical={false} />
+            <XAxis dataKey="label" tick={{ fill: T.muted, fontSize: 9, fontFamily: "'Space Grotesk', sans-serif" }} axisLine={{ stroke: T.line }} tickLine={false} interval="preserveStartEnd" />
+            <YAxis tick={{ fill: T.muted, fontSize: 10, fontFamily: "'Space Grotesk', sans-serif" }} axisLine={false} tickLine={false} tickFormatter={(v) => `${Math.round(v / 1000)}k`} width={36} />
+            <Tooltip contentStyle={CHART_TOOLTIP_STYLE} labelStyle={{ color: T.muted }} formatter={(v) => fmt(v)} />
+            <Area type="monotone" dataKey="cumulative" stroke={T.green} strokeWidth={2.5} fill="url(#cumulativeProfitFill)" name="Cumulative Profit" />
+          </AreaChart>
+        </ChartCard>
+      )}
 
       {weekdayPerformance.length > 0 && (
         <>
@@ -6174,6 +6336,32 @@ function AnalyticsTab({ data, persist }) {
         </div>
       </div>
 
+      <ChartCard title="BUSINESS HEALTH RADAR" height={220}>
+        <RadarChart data={healthRadar} cx="50%" cy="50%" outerRadius="75%">
+          <PolarGrid stroke={T.line} />
+          <PolarAngleAxis dataKey="vital" tick={{ fill: T.muted, fontSize: 9.5, fontFamily: "'Space Grotesk', sans-serif" }} />
+          <PolarRadiusAxis tick={false} axisLine={false} domain={[0, 100]} />
+          <Radar dataKey="value" stroke={T.green} fill={T.green} fillOpacity={0.35} strokeWidth={2} />
+          <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
+        </RadarChart>
+      </ChartCard>
+
+      <ChartCard title="WASTE TREND — LAST 6 MONTHS">
+        <AreaChart data={wasteTrendSeries}>
+          <defs>
+            <linearGradient id="wasteTrendFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={T.orange} stopOpacity={0.45} />
+              <stop offset="100%" stopColor={T.orange} stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid stroke={T.line} vertical={false} />
+          <XAxis dataKey="month" tick={{ fill: T.muted, fontSize: 9, fontFamily: "'Space Grotesk', sans-serif" }} axisLine={{ stroke: T.line }} tickLine={false} />
+          <YAxis tick={{ fill: T.muted, fontSize: 10, fontFamily: "'Space Grotesk', sans-serif" }} axisLine={false} tickLine={false} tickFormatter={(v) => `${Math.round(v / 1000)}k`} width={36} />
+          <Tooltip contentStyle={CHART_TOOLTIP_STYLE} labelStyle={{ color: T.muted }} formatter={(v) => fmt(v)} />
+          <Area type="monotone" dataKey="waste" stroke={T.orange} strokeWidth={2.5} fill="url(#wasteTrendFill)" name="Waste" />
+        </AreaChart>
+      </ChartCard>
+
       <SectionLabel text="PROFIT & LOSS — LAST 6 MONTHS" />
       <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 4 }}>
         {[...pnlByMonth].reverse().map((m) => (
@@ -6218,6 +6406,13 @@ function AnalyticsTab({ data, persist }) {
               {topExpenseCats.map((_, i) => <Cell key={i} fill={T.orange} fillOpacity={1 - i * 0.12} />)}
             </Bar>
           </BarChart>
+        </ChartCard>
+      )}
+      {expenseTreemapData.length > 0 && (
+        <ChartCard title="EXPENSE SHARE — BY AREA">
+          <Treemap data={expenseTreemapData} dataKey="value" nameKey="name" stroke={T.bg} content={<ExpenseTreemapCell />}>
+            <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v) => fmt(v)} />
+          </Treemap>
         </ChartCard>
       )}
 
@@ -6272,6 +6467,44 @@ function AnalyticsTab({ data, persist }) {
           </ChartCard>
         </>
       )}
+
+      {profitByChannel.length > 0 && (
+        <ChartCard title="PROFIT BY CHANNEL — NOT JUST REVENUE" height={200}>
+          <PieChart>
+            <Pie data={profitByChannel} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={75} paddingAngle={2} label={{ fill: T.ivory, fontSize: 10, fontFamily: "'Space Grotesk', sans-serif" }}>
+              {profitByChannel.map((d, i) => <Cell key={i} fill={d.color} stroke={T.bg} strokeWidth={2} />)}
+            </Pie>
+            <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v) => fmt(v)} />
+          </PieChart>
+        </ChartCard>
+      )}
+
+      {orderEconomics.length > 0 && (
+        <ChartCard title="ORDER ECONOMICS — SALE VALUE VS PROFIT">
+          <ScatterChart margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+            <CartesianGrid stroke={T.line} />
+            <XAxis type="number" dataKey="saleValue" name="Sale Value" tick={{ fill: T.muted, fontSize: 9, fontFamily: "'Space Grotesk', sans-serif" }} axisLine={{ stroke: T.line }} tickLine={false} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+            <YAxis type="number" dataKey="profit" name="Profit" tick={{ fill: T.muted, fontSize: 10, fontFamily: "'Space Grotesk', sans-serif" }} axisLine={false} tickLine={false} width={36} />
+            <Tooltip contentStyle={CHART_TOOLTIP_STYLE} cursor={{ strokeDasharray: "3 3" }} formatter={(v) => fmt(v)} />
+            <Scatter data={orderEconomics}>
+              {orderEconomics.map((e, i) => <Cell key={i} fill={CHANNEL_COLORS[e.channel] || T.muted} />)}
+            </Scatter>
+          </ScatterChart>
+        </ChartCard>
+      )}
+
+      <ChartCard title="MONTHLY ORDERS & AVG ORDER VALUE">
+        <ComposedChart data={orderVolumeSeries}>
+          <CartesianGrid stroke={T.line} vertical={false} />
+          <XAxis dataKey="month" tick={{ fill: T.muted, fontSize: 9, fontFamily: "'Space Grotesk', sans-serif" }} axisLine={{ stroke: T.line }} tickLine={false} />
+          <YAxis yAxisId="left" tick={{ fill: T.muted, fontSize: 10, fontFamily: "'Space Grotesk', sans-serif" }} axisLine={false} tickLine={false} width={28} allowDecimals={false} />
+          <YAxis yAxisId="right" orientation="right" tick={{ fill: T.muted, fontSize: 10, fontFamily: "'Space Grotesk', sans-serif" }} axisLine={false} tickLine={false} tickFormatter={(v) => `${Math.round(v / 1000)}k`} width={36} />
+          <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v) => fmt(v)} />
+          <Legend wrapperStyle={{ fontSize: 10, fontFamily: "'Space Grotesk', sans-serif" }} />
+          <Bar yAxisId="left" dataKey="orders" fill={T.blue} radius={[3, 3, 0, 0]} name="Orders" />
+          <Line yAxisId="right" type="monotone" dataKey="aov" stroke={T.gold} strokeWidth={2.5} dot={{ r: 2.5 }} name="Avg Order Value" />
+        </ComposedChart>
+      </ChartCard>
 
       <BudgetVsActual data={data} persist={persist} />
 
@@ -6332,6 +6565,42 @@ function AnalyticsTab({ data, persist }) {
             </div>
           ))}
         </div>
+      )}
+
+      {(receivablesAging.length > 0 || payablesAging.length > 0) && (
+        <>
+          <SectionLabel text="RECEIVABLES & PAYABLES AGING" />
+          <div style={{ display: "flex", gap: 10 }}>
+            {receivablesAging.length > 0 && (
+              <div style={{ flex: 1 }}>
+                <ChartCard title="RECEIVABLE" height={160}>
+                  <BarChart data={receivablesAging}>
+                    <XAxis dataKey="name" tick={{ fill: T.muted, fontSize: 8.5, fontFamily: "'Space Grotesk', sans-serif" }} axisLine={{ stroke: T.line }} tickLine={false} />
+                    <YAxis hide />
+                    <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v) => fmt(v)} cursor={{ fill: T.line, opacity: 0.3 }} />
+                    <Bar dataKey="value" radius={[3, 3, 0, 0]}>
+                      {receivablesAging.map((b, i) => <Cell key={i} fill={b.name === "30D+" ? T.orange : b.name === "NOT DUE" ? T.green : T.blue} />)}
+                    </Bar>
+                  </BarChart>
+                </ChartCard>
+              </div>
+            )}
+            {payablesAging.length > 0 && (
+              <div style={{ flex: 1 }}>
+                <ChartCard title="PAYABLE" height={160}>
+                  <BarChart data={payablesAging}>
+                    <XAxis dataKey="name" tick={{ fill: T.muted, fontSize: 8.5, fontFamily: "'Space Grotesk', sans-serif" }} axisLine={{ stroke: T.line }} tickLine={false} />
+                    <YAxis hide />
+                    <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v) => fmt(v)} cursor={{ fill: T.line, opacity: 0.3 }} />
+                    <Bar dataKey="value" radius={[3, 3, 0, 0]}>
+                      {payablesAging.map((b, i) => <Cell key={i} fill={b.name === "30D+" ? T.orange : b.name === "NOT DUE" ? T.green : T.purple} />)}
+                    </Bar>
+                  </BarChart>
+                </ChartCard>
+              </div>
+            )}
+          </div>
+        </>
       )}
 
       <SectionLabel text="FINANCIAL CALENDAR" />
@@ -6399,6 +6668,29 @@ function AnalyticsTab({ data, persist }) {
             <div style={{ fontSize: 10.5, color: T.muted, marginTop: 6 }} className="tnum">
               YOU: {fmt(ghostMode.curSoFar)} · GHOST (SAME DAY): {fmt(ghostMode.bestSoFar)}
             </div>
+          </div>
+        </>
+      )}
+
+      {fundGoalProgress.length > 0 && (
+        <>
+          <SectionLabel text="GOAL PROGRESS RACE" />
+          <ChartCard title="ACTIVE GOALS — % TO TARGET" height={220}>
+            <RadialBarChart data={fundGoalProgress} innerRadius="22%" outerRadius="95%" startAngle={90} endAngle={-270}>
+              <RadialBar dataKey="pct" background={{ fill: T.line }} cornerRadius={8}>
+                {fundGoalProgress.map((g, i) => <Cell key={i} fill={g.fill} />)}
+              </RadialBar>
+              <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v) => `${v}%`} />
+            </RadialBarChart>
+          </ChartCard>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: -8, marginBottom: 4 }}>
+            {fundGoalProgress.map((g) => (
+              <div key={g.name} style={S.pctRow}>
+                <span style={{ ...S.pctDot, background: g.fill }} />
+                <span style={S.pctName}>{g.name}</span>
+                <span style={{ fontSize: 12.5, fontWeight: 700, color: g.fill }} className="tnum">{g.pct}%</span>
+              </div>
+            ))}
           </div>
         </>
       )}
