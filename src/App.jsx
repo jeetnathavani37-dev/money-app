@@ -1842,6 +1842,10 @@ function OverviewTab({ data, persist, registerActivity, setToast, triggerNoteAni
 
       <TodayProfitHero data={data} todayProfit={todayProfit} todayIncome={todayIncome} todayExpense={todayExpense} today={today} />
 
+      <div style={{ marginTop: 12 }}>
+        <QuickActionsBar data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />
+      </div>
+
       <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
         <HealthScoreCard data={data} />
         <HeatMeter data={data} />
@@ -1854,8 +1858,6 @@ function OverviewTab({ data, persist, registerActivity, setToast, triggerNoteAni
       <AICouncil data={data} />
 
       <LuxellaPanel />
-
-      <QuickActionsBar data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />
 
       <WhyBanner data={data} persist={persist} />
 
