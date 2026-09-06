@@ -270,6 +270,32 @@ function WoWBadge({ pct, invert }) {
   );
 }
 
+// Best single-day profit ever logged, excluding `excludeDate` (usually today, so "today vs best" reads right).
+function computeBestDay(data, excludeDate) {
+  const profitByDate = {};
+  for (const e of data.income) profitByDate[e.date] = (profitByDate[e.date] || 0) + e.amount;
+  for (const e of data.expenses) profitByDate[e.date] = (profitByDate[e.date] || 0) - e.amount;
+
+  let bestDate = null, bestProfit = -Infinity;
+  for (const [date, profit] of Object.entries(profitByDate)) {
+    if (date === excludeDate) continue;
+    if (profit > bestProfit) { bestProfit = profit; bestDate = date; }
+  }
+  return bestDate && bestProfit > 0 ? { date: bestDate, profit: bestProfit } : null;
+}
+
+// A logging streak is only worth protecting once it's actually a streak, and only "at risk"
+// while it's still alive (last active today or yesterday) — a streak that already lapsed
+// two-plus days ago will reset to 1 on the next log regardless, so warning about it would lie.
+function computeStreakRisk(data) {
+  const today = todayISO();
+  const count = data.streak?.count || 0;
+  const lastActiveDate = data.streak?.lastActiveDate || null;
+  const loggedToday = lastActiveDate === today;
+  const stillAlive = loggedToday || (lastActiveDate && daysBetween(lastActiveDate, today) === 1);
+  return { atRisk: stillAlive && !loggedToday && count >= 2, count };
+}
+
 function computeHeatLevel(data) {
   const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
   const recentWaste = data.expenses.filter((e) => e.unnecessary && e.date >= sevenDaysAgo);
@@ -1808,6 +1834,8 @@ function OverviewTab({ data, persist, registerActivity, setToast, triggerNoteAni
 
       <RuthlessPushBanner data={data} />
 
+      <StreakRiskBanner data={data} />
+
       <MoneyQuoteBanner />
 
       <MoodRing data={data} />
@@ -2910,6 +2938,19 @@ function RuthlessPushBanner({ data }) {
   );
 }
 
+function StreakRiskBanner({ data }) {
+  const { atRisk, count } = useMemo(() => computeStreakRisk(data), [data.streak]);
+  if (!atRisk) return null;
+  return (
+    <div style={S.streakRiskBanner}>
+      <Flame size={18} color={T.gold} />
+      <div style={S.streakRiskText}>
+        <b style={{ color: T.gold }}>{count}-day streak</b> — log one entry today before it resets.
+      </div>
+    </div>
+  );
+}
+
 function MoodRing({ data }) {
   const mood = computeMoodRing(data);
   return (
@@ -2952,6 +2993,8 @@ function TodayProfitHero({ data, todayProfit, todayIncome, todayExpense, today }
   const remaining = Math.max(0, target - todayProfit);
   const hit = todayProfit >= target;
   const color = hit ? T.green : todayProfit >= 0 ? T.gold : T.orange;
+  const bestDay = useMemo(() => computeBestDay(data, today), [data.income, data.expenses, today]);
+  const beatRecord = bestDay && todayProfit > bestDay.profit;
   const todayEntries = [
     ...data.income.filter((e) => e.date === today).map((e) => ({ ...e, kind: "in" })),
     ...data.expenses.filter((e) => e.date === today).map((e) => ({ ...e, kind: "out" })),
@@ -2965,6 +3008,13 @@ function TodayProfitHero({ data, todayProfit, todayIncome, todayExpense, today }
       </div>
       <div style={{ ...S.heroNum, color: todayProfit >= 0 ? T.green : T.orange }} className="tnum">{fmtSigned(todayProfit)}</div>
       <div style={S.heroSub} className="tnum">{fmt(todayIncome)} IN · {fmt(todayExpense)} OUT — TODAY ONLY</div>
+      {bestDay && (
+        <div style={{ fontSize: 10.5, fontWeight: 700, marginTop: 6, color: beatRecord ? T.gold : T.muted, letterSpacing: "0.02em" }} className="tnum">
+          {beatRecord
+            ? `🏆 NEW PERSONAL BEST — beat ${fmt(bestDay.profit)} from ${fmtDate(bestDay.date)}`
+            : `${fmt(Math.max(0, bestDay.profit - todayProfit))} away from your best day ever (${fmt(bestDay.profit)} on ${fmtDate(bestDay.date)})`}
+        </div>
+      )}
       {target > 0 && (
         <>
           <div style={{ ...S.progressTrack, marginTop: 10 }}>
@@ -6351,6 +6401,8 @@ const S = {
   smsBanner: { width: "100%", background: `${T.blue}1A`, border: `1px solid ${T.blue}40`, borderRadius: T.radiusMd, padding: "12px 14px", fontSize: 11, fontWeight: 700, color: T.blue, marginBottom: 10, fontFamily: "'Space Grotesk', sans-serif" },
   ruthlessBanner: { background: `linear-gradient(135deg, ${T.orange}, #E5502E)`, borderRadius: T.radiusLg, boxShadow: glow(T.orange, 0.25), padding: "18px 16px", marginBottom: 12 },
   ruthlessText: { fontSize: 15, fontWeight: 700, color: T.bg, lineHeight: 1.4, letterSpacing: "-0.01em" },
+  streakRiskBanner: { display: "flex", alignItems: "center", gap: 10, background: `${T.gold}14`, border: `1px solid ${T.gold}40`, borderRadius: T.radiusMd, boxShadow: glow(T.gold, 0.14), padding: "12px 14px", marginBottom: 12 },
+  streakRiskText: { fontSize: 12, color: T.ivory, lineHeight: 1.4, fontWeight: 600 },
   quoteBanner: { textAlign: "center", padding: "10px 8px", marginBottom: 10, minHeight: 34, display: "flex", alignItems: "center", justifyContent: "center" },
   quoteText: { fontSize: 12, fontStyle: "italic", color: T.gold, fontWeight: 600, letterSpacing: "0.01em", transition: "opacity 0.35s ease" },
   saveDot: { fontSize: 9.5, color: T.green, transition: "opacity 0.3s", height: 12, marginTop: 4, fontWeight: 700, letterSpacing: "0.05em" },
