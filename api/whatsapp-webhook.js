@@ -18,7 +18,7 @@
 // "join <code>" message to reactivate. Fine for personal single-user use.
 //
 // Requires this Vercel environment variable:
-//   ANTHROPIC_API_KEY — from console.anthropic.com
+//   GEMINI_API_KEY — from https://aistudio.google.com/apikey
 
 import { loadState } from "./_lib/supabase.js";
 import { runMoneyAgent } from "./_lib/money-agent.js";

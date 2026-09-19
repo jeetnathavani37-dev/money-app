@@ -22,7 +22,7 @@
 //      "how much did I spend on shipping last month?"
 //
 // Requires these Vercel environment variables:
-//   ANTHROPIC_API_KEY          — same as the other bots
+//   GEMINI_API_KEY             — same as the other bots
 //   WHATSAPP_CLOUD_TOKEN       — the access token from step 2
 //   WHATSAPP_PHONE_NUMBER_ID   — the Phone Number ID from step 2
 //   WHATSAPP_VERIFY_TOKEN      — the verify token you picked in step 3

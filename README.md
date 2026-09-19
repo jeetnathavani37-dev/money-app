@@ -21,7 +21,8 @@ Vercel project's environment variables for deployment:
 
 | Variable | Used by | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | `api/ai-proxy.js`, `api/_lib/money-agent.js` (Telegram + WhatsApp) | Calls to the Claude API |
+| `GEMINI_API_KEY` | `api/ai-proxy.js`, `api/_lib/money-agent.js` (Telegram + WhatsApp) | Calls to the Gemini API (free tier — get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)) |
+| `GEMINI_MODEL` | same as above | Optional — overrides the default `gemini-2.5-flash` |
 | `TELEGRAM_BOT_TOKEN` | `api/telegram-webhook.js`, `api/cron-summary.js` | Telegram Bot API access |
 | `CRON_SECRET` | `api/cron-summary.js` | Shared secret so only your scheduler can trigger the summary endpoint |
 | `AGENT_BRIDGE_SECRET` | `api/agent-message.js` | Shared secret so only your own external bot (e.g. a self-hosted WhatsApp bot) can call the money agent |
@@ -30,17 +31,17 @@ Vercel project's environment variables for deployment:
 
 ## API routes
 
-- **`api/ai-proxy.js`** — thin server-side proxy to the Claude API (keeps
-  `ANTHROPIC_API_KEY` off the client); used by the web app's AI features
+- **`api/ai-proxy.js`** — thin server-side proxy to the Gemini API (keeps
+  `GEMINI_API_KEY` off the client); used by the web app's AI features
   (health score reports, daily tips, the AI council, voice/typed-entry parsing).
 - **`api/_lib/money-agent.js`** — the shared "money agent" both bots run on: a
   specialized financial-controller persona for this specific D2C
   sourcing/resale business, backed by real tool use (`log_entry`,
-  `undo_last_entry`, `get_financial_data`) instead of asking Claude to emit a
+  `undo_last_entry`, `get_financial_data`) instead of asking the model to emit a
   specific text format. `get_financial_data` lets it answer *any* question
   about the real ledger (arbitrary date ranges, categories, keywords) rather
   than being limited to fixed today/week/month snapshots, and each chat keeps
-  a short rolling memory so follow-up questions work. Runs on Claude Opus 5.
+  a short rolling memory so follow-up questions work. Runs on Gemini (function calling), free tier.
 - **`api/telegram-webhook.js`** — Telegram bot on the money agent: log
   entries, ask anything about your real data, undo the last entry, get
   tactical advice — all in one open-ended chat.

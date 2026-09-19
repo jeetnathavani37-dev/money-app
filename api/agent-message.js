@@ -4,7 +4,7 @@
 // Twilio webhook). POST { userMessage, chatKey, channel? } and get back { replyText }.
 //
 // Requires these Vercel environment variables:
-//   ANTHROPIC_API_KEY — same as the other bots
+//   GEMINI_API_KEY — same as the other bots
 //   AGENT_BRIDGE_SECRET — shared secret; the caller must send it as
 //                         Authorization: Bearer <secret>
 

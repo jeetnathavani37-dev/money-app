@@ -1,14 +1,14 @@
 // The shared "money agent" brain used by both the Telegram and WhatsApp bots.
-// Replaces the old approach of asking Claude to emit a raw "LOG:{...}" / "ANSWER:" /
+// Replaces the old approach of asking the model to emit a raw "LOG:{...}" / "ANSWER:" /
 // "TIP" text prefix (fragile — any deviation from the exact format broke the reply)
-// with real tool use: Claude decides what to do and calls a tool for it, and can pull
+// with real tool use: the model decides what to do and calls a tool for it, and can pull
 // exactly the real numbers it needs to answer any question instead of working from a
-// fixed today/week/month snapshot.
+// fixed today/week/month snapshot. Runs on Gemini (function calling) — no SDK, just fetch
+// against the REST API, matching api/ai-proxy.js's style.
 
-import Anthropic from "@anthropic-ai/sdk";
 import { loadState, saveState } from "./supabase.js";
 
-const MODEL = "claude-opus-5";
+const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 const MAX_TURNS = 5; // hard cap on tool-call round trips per incoming message
 const MAX_MEMORY_TURNS = 16; // plain user/assistant turns kept per chat, for follow-up questions
 
@@ -78,6 +78,60 @@ const TOOLS = [
     },
   },
 ];
+
+// Gemini's function-declaration schema is a JSON-Schema subset with upper-cased type
+// names — reuse the same TOOLS definitions above instead of hand-duplicating them.
+function toGeminiSchema(schema) {
+  if (!schema || typeof schema !== "object") return schema;
+  const out = {};
+  if (schema.type) out.type = schema.type.toUpperCase();
+  if (schema.description) out.description = schema.description;
+  if (schema.enum) out.enum = schema.enum;
+  if (schema.properties) {
+    out.properties = Object.fromEntries(Object.entries(schema.properties).map(([k, v]) => [k, toGeminiSchema(v)]));
+  }
+  if (schema.items) out.items = toGeminiSchema(schema.items);
+  if (schema.required) out.required = schema.required;
+  return out;
+}
+
+const GEMINI_TOOLS = [
+  {
+    functionDeclarations: TOOLS.map((t) => ({
+      name: t.name,
+      description: t.description,
+      // Omit `parameters` entirely for no-arg tools — Gemini expects that, not an
+      // OBJECT schema with empty properties.
+      ...(Object.keys(t.input_schema.properties || {}).length > 0 ? { parameters: toGeminiSchema(t.input_schema) } : {}),
+    })),
+  },
+];
+
+async function callGemini({ apiKey, model, systemInstruction, contents, tools, thinkingBudget, maxOutputTokens }) {
+  const upstream = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents,
+        systemInstruction: { parts: [{ text: systemInstruction }] },
+        tools,
+        generationConfig: {
+          maxOutputTokens,
+          ...(thinkingBudget !== undefined ? { thinkingConfig: { thinkingBudget } } : {}),
+        },
+      }),
+    }
+  );
+  const json = await upstream.json().catch(() => null);
+  if (!upstream.ok) {
+    const err = new Error(json?.error?.message || `Gemini API error ${upstream.status}`);
+    err.status = upstream.status;
+    throw err;
+  }
+  return json;
+}
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
@@ -274,9 +328,9 @@ function withMemory(data, channel, chatKey, turns) {
 }
 
 function friendlyErrorReply(err) {
-  if (err instanceof Anthropic.RateLimitError) return "The AI is rate-limited right now — give it a few seconds and try again.";
-  if (err instanceof Anthropic.AuthenticationError) return "AI is misconfigured server-side (bad/missing API key) — this needs a human to fix ANTHROPIC_API_KEY.";
-  if (err instanceof Anthropic.APIError) return `AI service error (${err.status || "?"}) — try again in a moment.`;
+  if (err.status === 429) return "The AI is rate-limited right now — give it a few seconds and try again.";
+  if (err.status === 401 || err.status === 403) return "AI is misconfigured server-side (bad/missing API key) — this needs a human to fix GEMINI_API_KEY.";
+  if (err.status >= 500) return `AI service error (${err.status}) — try again in a moment.`;
   return "Something broke talking to the AI — try again in a moment.";
 }
 
@@ -292,84 +346,90 @@ function friendlyErrorReply(err) {
  * @returns {Promise<{replyText: string}>}
  */
 export async function runMoneyAgent({ channel, chatKey, state, userMessage }) {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return { replyText: "Server missing ANTHROPIC_API_KEY env var — this needs a human to set it in Vercel." };
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return { replyText: "Server missing GEMINI_API_KEY env var — this needs a human to set it in Vercel." };
   }
-  const client = new Anthropic();
   let data = state.data;
   let updatedAt = state.updatedAt;
 
   const priorTurns = getMemory(data, channel, chatKey);
-  const messages = [...priorTurns, { role: "user", content: userMessage }];
+  const contents = [
+    ...priorTurns.map((t) => ({ role: t.role === "assistant" ? "model" : "user", parts: [{ text: t.content }] })),
+    { role: "user", parts: [{ text: userMessage }] },
+  ];
 
   let replyText = null;
 
   try {
     for (let turn = 0; turn < MAX_TURNS && replyText === null; turn++) {
-      const response = await client.messages.create({
+      const json = await callGemini({
+        apiKey,
         model: MODEL,
-        max_tokens: 4096,
-        system: SYSTEM_PROMPT,
-        thinking: { type: "adaptive" },
-        output_config: { effort: "xhigh" }, // deeper reasoning for real strategic/financial advice, not just quick lookups
-        tools: TOOLS,
-        messages,
+        systemInstruction: SYSTEM_PROMPT,
+        contents,
+        tools: GEMINI_TOOLS,
+        thinkingBudget: -1, // dynamic thinking — deeper reasoning for real strategic/financial advice, not just quick lookups
+        maxOutputTokens: 4096,
       });
 
-      const toolUses = response.content.filter((b) => b.type === "tool_use");
-      const text = response.content.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+      const candidate = json.candidates?.[0];
+      const parts = candidate?.content?.parts || [];
+      const functionCalls = parts.filter((p) => p.functionCall).map((p) => p.functionCall);
+      const text = parts.filter((p) => typeof p.text === "string").map((p) => p.text).join("\n").trim();
 
-      if (toolUses.length === 0) {
+      if (functionCalls.length === 0) {
         replyText = text || "Didn't quite catch that — try rephrasing.";
         break;
       }
 
-      messages.push({ role: "assistant", content: response.content });
+      contents.push({ role: "model", parts });
 
-      const toolResults = [];
-      for (const tu of toolUses) {
-        if (tu.name === "get_financial_data") {
-          const result = computeFinancialData(data, tu.input || {});
-          toolResults.push({ type: "tool_result", tool_use_id: tu.id, content: JSON.stringify(result) });
-        } else if (tu.name === "log_entry") {
-          const outcome = computeLog(data, tu.input || {}, userMessage);
+      const functionResponseParts = [];
+      for (const fc of functionCalls) {
+        const args = fc.args || {};
+        if (fc.name === "get_financial_data") {
+          const result = computeFinancialData(data, args);
+          functionResponseParts.push({ functionResponse: { name: fc.name, response: { result } } });
+        } else if (fc.name === "log_entry") {
+          const outcome = computeLog(data, args, userMessage);
           if (!outcome) {
-            toolResults.push({ type: "tool_result", tool_use_id: tu.id, content: "Invalid amount — couldn't log that.", is_error: true });
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Invalid amount — couldn't log that." } } });
             continue;
           }
           const saved = await saveState(outcome.data, updatedAt);
           if (saved.ok) {
             data = outcome.data;
             updatedAt = saved.updatedAt;
-            toolResults.push({ type: "tool_result", tool_use_id: tu.id, content: outcome.meta });
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { result: outcome.meta } } });
           } else {
             const fresh = await loadState();
             data = fresh.data;
             updatedAt = fresh.updatedAt;
-            toolResults.push({ type: "tool_result", tool_use_id: tu.id, content: "Save conflicted with another concurrent write — state reloaded, please retry the log.", is_error: true });
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Save conflicted with another concurrent write — state reloaded, please retry the log." } } });
           }
-        } else if (tu.name === "undo_last_entry") {
+        } else if (fc.name === "undo_last_entry") {
           const outcome = computeUndo(data);
           if (!outcome) {
-            toolResults.push({ type: "tool_result", tool_use_id: tu.id, content: "Nothing to undo — no entries logged yet." });
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { result: "Nothing to undo — no entries logged yet." } } });
             continue;
           }
           const saved = await saveState(outcome.data, updatedAt);
           if (saved.ok) {
             data = outcome.data;
             updatedAt = saved.updatedAt;
-            toolResults.push({ type: "tool_result", tool_use_id: tu.id, content: outcome.meta });
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { result: outcome.meta } } });
           } else {
             const fresh = await loadState();
             data = fresh.data;
             updatedAt = fresh.updatedAt;
-            toolResults.push({ type: "tool_result", tool_use_id: tu.id, content: "Undo conflicted with another concurrent write — state reloaded, please retry.", is_error: true });
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Undo conflicted with another concurrent write — state reloaded, please retry." } } });
           }
         } else {
-          toolResults.push({ type: "tool_result", tool_use_id: tu.id, content: `Unknown tool ${tu.name}`, is_error: true });
+          functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: `Unknown tool ${fc.name}` } } });
         }
       }
-      messages.push({ role: "user", content: toolResults });
+      contents.push({ role: "function", parts: functionResponseParts });
     }
   } catch (err) {
     return { replyText: friendlyErrorReply(err) };
