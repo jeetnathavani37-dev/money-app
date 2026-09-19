@@ -1,8 +1,16 @@
-# Business memory — Smart Order / B2B supplier flow
+# Business memory — Smart Entry flow (B2B orders, sales, settlements)
 
-This documents the rules behind the "Smart Order" feature so anyone (human or AI) working
-on this code later doesn't have to re-derive them. It's static documentation — the app also
-keeps its own *runtime* memory (see "Runtime memory" below), which is different.
+This documents the rules behind the "Smart Entry" feature (the ⚡ button in the web app;
+`log_b2b_order`/`log_sale_order`/`settle_due`/`confirm_order_landed` in the bots) so anyone
+(human or AI) working on this code later doesn't have to re-derive them. It's static
+documentation — the app also keeps its own *runtime* memory (see "Runtime memory" below),
+which is different.
+
+One box, three intents, all AI-classified from one free-text line: `b2b_order` (a new
+incoming supplier order), `sale_order` (a new client sale), `settle_due` (money that just
+moved against something already pending). The common thread across all three: **a pending
+balance never moves cash or logs new income/expense on its own — only `settle_due` /
+`confirm_order_landed` actually do that**, whenever the deferred amount is finally confirmed.
 
 ## The problem this solves
 
@@ -60,6 +68,36 @@ changes.
 `supplier` is free text, never validated against a fixed list — "Sourcex" is just the example
 the user gave first. If a different supplier name comes up, it's used as-is (`B2B <NAME>`,
 falling back to `B2B ORDER` if none is given). Don't turn this into a rigid enum.
+
+## Sale orders and settling receivables/payables
+
+A client sale (`sale_order`) books its profit as income **immediately**, regardless of how
+much cash is actually in hand — this mirrors the pre-existing "+ SOLD ORDER" quick action and
+is deliberate: profit is accrual-style, cash is tracked separately. Whatever isn't received
+right away becomes a `receivables` entry tagged `fromSoldOrder: true`.
+
+That flag matters because of `settle_due`, the one function that actually moves money for a
+pending receivable or payable (this also applies to a `log_b2b_order` order that eventually
+lands unpaid, and to any plain receivable/payable added by hand in the Dues tab):
+
+- **Receivable with `fromSoldOrder: true`** → the profit was already booked at sale time.
+  Settling it only moves cash into an account; it must never log income again.
+- **Receivable without that flag** (a plain "someone owes me money" entry, e.g. "Sourcex owes
+  me 1 lakh") → nothing was pre-booked. Settling it **does** log income, in addition to
+  moving cash.
+- **Payables** never have anything pre-booked (no accrual-expense concept for payables
+  anywhere in this app) → settling one **always** logs an expense.
+
+`settle_due` matches an existing pending entry by a case-insensitive substring match on
+`party` (checked both directions, so "Sourcex" matches a stored "Sourcex Pvt Ltd" and vice
+versa) — never invents a new receivable/payable itself, and supports **partial** settlement:
+whatever's left after the amount just paid/received stays `pending` with its `amount`
+decremented; only a full payoff flips `status` to `"received"`/`"paid"`.
+
+Before this feature, `DuesTab`'s plain "mark received/paid" checkbox toggle (`toggleStatus`
+in `src/App.jsx`) only ever flipped `status` — it never moved money into an account or logged
+income/expense. That toggle is unchanged and still has that limitation; `settle_due` (via the
+⚡ button or the bots) is the path that actually moves money correctly.
 
 ## Runtime memory (distinct from this file)
 

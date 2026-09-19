@@ -32,6 +32,8 @@ CORE ACTIONS — always via tools, never by guessing:
    - Once logged, tell the user the potential profit (expected selling price minus estimated landed cost) plainly.
 6. CONFIRM A B2B ORDER HAS LANDED (e.g. "sourcex order land ho gaya, reship 800 tha") — confirm_order_landed tool. Ask for the actual reship cost if not given. This logs whatever expense(s) were deferred and finalizes the real landed cost — tell the user the actual profit (expected selling price minus actual landed cost), and how it compares to what was estimated at order time.
 7. REMEMBER a durable business pattern worth not re-explaining next time (a typical reship cost for a supplier, a recurring margin, a phrasing habit) — remember tool. Use this sparingly, only for things genuinely worth carrying forward, especially right after confirm_order_landed reveals a real number worth keeping.
+8. LOG A NEW CLIENT SALE (e.g. "sold to Rahul for 20k, 2k profit, got 5k now") — log_sale_order tool. The profit books as income immediately regardless of what's actually been collected. Any amount NOT yet received becomes a receivable — it does not count as cash in hand until settle_due confirms it later.
+9. SETTLE something ALREADY pending — money that just arrived or was just paid, not a new order or sale (e.g. "sourcex se 15k agya", "rahul ne baaki 15k de diya", "supplier ko 3k pay kiya") — settle_due tool. This is what actually moves money for a receivable/payable — a sale's "money due" or a B2B order's cost sit inert until this fires. Matches by party name; supports partial settlement (whatever's left stays pending).
 
 HOW TO APPLY THAT CRAFT to what get_financial_data returns:
 - Landed cost discipline: real cost of goods = item price + international shipping + customs duty + payment fees. If an expense category is quietly eating margin, name it and the number.
@@ -129,6 +131,34 @@ const TOOLS = [
         note: { type: "string", description: "one short factual note to remember" },
       },
       required: ["note"],
+    },
+  },
+  {
+    name: "log_sale_order",
+    description: "Log a NEW sale to a client. The profit books as income immediately; any amount not yet received becomes a receivable that only affects the account once settle_due confirms it later.",
+    input_schema: {
+      type: "object",
+      properties: {
+        client_name: { type: "string", description: "buyer/client name" },
+        sale_value: { type: "number", description: "total sale value, if mentioned" },
+        expected_profit: { type: "number", description: "profit from this sale" },
+        money_received_now: { type: "number", description: "cash already in hand right now, if any" },
+        money_due: { type: "number", description: "amount not yet received, if any — becomes a receivable" },
+      },
+      required: ["client_name", "expected_profit"],
+    },
+  },
+  {
+    name: "settle_due",
+    description: "Record money that just arrived or was just paid against something ALREADY pending (a receivable or payable from an earlier sale or order) — not a new order or sale. Matches the pending entry by party name; settles it in full or partially.",
+    input_schema: {
+      type: "object",
+      properties: {
+        party: { type: "string", description: "who the money is arriving from or being paid to" },
+        amount: { type: "number", description: "amount that just moved" },
+        due_type: { type: "string", enum: ["receivable", "payable"], description: "'receivable' if money is arriving TO the user, 'payable' if going OUT — omit if unsure, both get searched" },
+      },
+      required: ["party", "amount"],
     },
   },
 ];
@@ -324,6 +354,86 @@ function computeConfirmOrderLanded(data, input) {
   return {
     data: { ...data, investments, expenses: [...data.expenses, ...expensesToAdd], fundBalances },
     meta: `Landed (${itemLabel}): actual cost ₹${actualLandedCost} (estimate was ₹${inv.itemValue}), projected profit ₹${Math.round(inv.amount - actualLandedCost)}.`,
+  };
+}
+
+// Mirrors src/App.jsx's SmartOrderButton.saveSaleOrder — profit books as income immediately;
+// whatever isn't received yet becomes a receivable (fromSoldOrder: true) that only moves money
+// once settle_due below actually confirms it.
+function computeLogSaleOrder(data, input) {
+  const profit = Number(input.expected_profit);
+  if (!profit || profit <= 0) return null;
+  const saleValue = Number(input.sale_value) || 0;
+  const received = Number(input.money_received_now) || 0;
+  const due = Number(input.money_due) || 0;
+  const buyer = (input.client_name || "buyer").trim() || "buyer";
+  const today = todayISO();
+  const profitPct = saleValue > 0 ? Math.round((profit / saleValue) * 1000) / 10 : null;
+
+  const { fundDelta, fundBalances } = applyFundDelta(data, profit, 1);
+  const income = {
+    id: Date.now(), amount: profit, source: "Sold Order",
+    note: `${buyer} — sale ₹${saleValue || 0}, received ₹${received || 0}${profitPct !== null ? ` (${profitPct}% margin)` : ""}`,
+    date: today, fundDelta, customerName: buyer, saleValue: saleValue || null,
+  };
+  let nextData = { ...data, income: [...data.income, income], fundBalances };
+  let meta = `Logged ₹${profit} profit (${buyer}).`;
+  if (due > 0) {
+    const receivable = { id: Date.now() + 1, party: buyer, amount: due, dueDate: null, note: `Sold order — sale ₹${saleValue || 0}`, status: "pending", fromSoldOrder: true };
+    nextData = { ...nextData, receivables: [...nextData.receivables, receivable] };
+    meta += ` ₹${due} due later, moved to receivables — settle_due when it's actually paid.`;
+  }
+  return { data: nextData, meta };
+}
+
+// The counterpart to log_b2b_order/log_sale_order — those two only ever create a *pending*
+// balance; this is what actually moves money for either one. Searches receivables and
+// payables by party-name match (case-insensitive substring, either direction) and settles in
+// full or partially. A receivable created by a sale (fromSoldOrder) never re-logs income here —
+// that profit was already booked at sale time; this only moves the cash.
+function computeSettleDue(data, input) {
+  const party = String(input.party || "").trim().toLowerCase();
+  const amt = Number(input.amount);
+  if (!party || !amt || amt <= 0) return null;
+  const dueType = input.due_type === "payable" || input.due_type === "receivable" ? input.due_type : null;
+  const matches = (p) => !!p && (p.toLowerCase().includes(party) || party.includes(p.toLowerCase()));
+
+  let match = null;
+  if (dueType !== "payable") {
+    const found = data.receivables.find((r) => r.status === "pending" && matches(r.party));
+    if (found) match = { kind: "receivable", entry: found };
+  }
+  if (!match && dueType !== "receivable") {
+    const found = data.payables.find((p) => p.status === "pending" && matches(p.party));
+    if (found) match = { kind: "payable", entry: found };
+  }
+  if (!match) return null;
+
+  const { kind, entry } = match;
+  const today = todayISO();
+  const remaining = Math.max(0, (entry.amount || 0) - amt);
+  const doneStatus = kind === "receivable" ? "received" : "paid";
+  const listKey = kind === "receivable" ? "receivables" : "payables";
+  const updatedList = data[listKey].map((e) => (e.id === entry.id ? { ...e, amount: remaining, status: remaining <= 0 ? doneStatus : "pending" } : e));
+
+  let nextData = { ...data, [listKey]: updatedList };
+  if (kind === "receivable") {
+    if (!entry.fromSoldOrder) {
+      const { fundDelta, fundBalances } = applyFundDelta(nextData, amt, 1);
+      const income = { id: Date.now(), amount: amt, source: entry.party, note: `${entry.party} — settlement`, date: today, fundDelta };
+      nextData = { ...nextData, income: [...nextData.income, income], fundBalances };
+    }
+  } else {
+    const { fundDelta, fundBalances } = applyFundDelta(nextData, amt, -1);
+    const expense = { id: Date.now(), amount: amt, category: "Sourcing/Business", note: `${entry.party} — settlement`, date: today, unnecessary: false, fine: 0, fundDelta };
+    nextData = { ...nextData, expenses: [...nextData.expenses, expense], fundBalances };
+  }
+
+  return {
+    data: nextData,
+    meta: remaining <= 0
+      ? `Settled in full — ${kind} with ${entry.party} closed.`
+      : `Partial settlement — ₹${remaining} still ${kind === "receivable" ? "due from" : "owed to"} ${entry.party}.`,
   };
 }
 
@@ -607,6 +717,40 @@ export async function runMoneyAgent({ channel, chatKey, state, userMessage }) {
           const outcome = computeRemember(data, args.note);
           if (!outcome) {
             functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Empty note — nothing to remember." } } });
+            continue;
+          }
+          const saved = await saveState(outcome.data, updatedAt);
+          if (saved.ok) {
+            data = outcome.data;
+            updatedAt = saved.updatedAt;
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { result: outcome.meta } } });
+          } else {
+            const fresh = await loadState();
+            data = fresh.data;
+            updatedAt = fresh.updatedAt;
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Save conflicted with another concurrent write — state reloaded, please retry." } } });
+          }
+        } else if (fc.name === "log_sale_order") {
+          const outcome = computeLogSaleOrder(data, args);
+          if (!outcome) {
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Invalid profit amount — couldn't log that sale." } } });
+            continue;
+          }
+          const saved = await saveState(outcome.data, updatedAt);
+          if (saved.ok) {
+            data = outcome.data;
+            updatedAt = saved.updatedAt;
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { result: outcome.meta } } });
+          } else {
+            const fresh = await loadState();
+            data = fresh.data;
+            updatedAt = fresh.updatedAt;
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Save conflicted with another concurrent write — state reloaded, please retry." } } });
+          }
+        } else if (fc.name === "settle_due") {
+          const outcome = computeSettleDue(data, args);
+          if (!outcome) {
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Couldn't find a matching pending receivable or payable for that party — ask the user to clarify which one." } } });
             continue;
           }
           const saved = await saveState(outcome.data, updatedAt);

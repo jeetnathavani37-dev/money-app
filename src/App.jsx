@@ -1058,6 +1058,10 @@ function VoiceLogButton({ data, persist, registerActivity, setToast, triggerNote
 // existing Cashout flow stages inventory — "mark landed" (below, in InvestmentsTab) later
 // confirms the real reship cost and hands off to the unmodified "mark sold" flow for the
 // eventual sale, so the landed cost only ever needs updating in one place: `itemValue`.
+// Three intents share this one box: a new incoming supplier order (b2b_order — the original
+// flow), a new client sale (sale_order — mirrors QuickActionsBar's "+ SOLD ORDER"), and money
+// that just moved against something ALREADY pending (settle_due — partial or full receivable/
+// payable settlement, which previously had no way to actually move cash into an account).
 function SmartOrderButton({ data, persist, registerActivity, setToast, triggerNoteAnim }) {
   const [open, setOpen] = useState(false);
   const [typedText, setTypedText] = useState("");
@@ -1069,19 +1073,34 @@ function SmartOrderButton({ data, persist, registerActivity, setToast, triggerNo
     setLoading(true);
     setError(null);
     try {
-      const prompt = `Parse this business order description into JSON. Text: "${text}"\nThis app tracks small-business resale orders (e.g. from suppliers like Sourcex) that get costed, shipped, and resold.\nReturn ONLY valid JSON, no other text, in this exact shape:\n{"isB2BOrder":boolean|null,"supplier":string|null,"itemName":string|null,"prepaid":boolean|null,"costing":number|null}\nRules:\n- isB2BOrder: true if this sounds like a business/wholesale/resale order from a supplier (not a personal purchase). false otherwise. null if truly unclear.\n- supplier: the supplier/vendor name mentioned, title-cased (e.g. "Sourcex"). null if not mentioned.\n- itemName: the product/item name if mentioned. null if not mentioned.\n- prepaid: true if the text says the order is already paid for upfront (e.g. "prepaid", "PRE paid"). false if it explicitly says not paid yet / pay on delivery / COD. null if not mentioned either way.\n- costing: the cost price paid to the supplier, ONLY if an explicit number is mentioned. null otherwise — never guess a number.`;
+      const prompt = `Parse this business message into JSON. Text: "${text}"\nThis app tracks a small resale business: incoming supplier orders (costed, shipped, resold), new client sales (profit booked now, some money sometimes due later), and money that just arrived or was just paid against something ALREADY pending.\nReturn ONLY valid JSON, no other text, in this exact shape:\n{"intent":"b2b_order"|"sale_order"|"settle_due"|null,"supplier":string|null,"itemName":string|null,"prepaid":boolean|null,"costing":number|null,"clientName":string|null,"saleValue":number|null,"expectedProfit":number|null,"moneyReceivedNow":number|null,"party":string|null,"amount":number|null,"dueType":"receivable"|"payable"|null}\nRules:\n- intent "b2b_order": a NEW incoming order FROM a supplier that still needs costing/shipping (e.g. "order aya sourcex se, prepaid hai"). Fill supplier/itemName/prepaid/costing only.\n- intent "sale_order": a NEW sale to a client being logged for the first time (e.g. "20k order client ka", "sold to Rahul for 15k, 2k profit"). Fill clientName/saleValue/expectedProfit/moneyReceivedNow only — moneyReceivedNow is cash in hand right now, usually 0 or unmentioned.\n- intent "settle_due": money that just arrived or was just paid against something ALREADY pending, not a new order or sale (e.g. "sourcex se 15k agya", "rahul ne 5k diya", "supplier ko 3k pay kiya"). Fill party (who), amount (how much), and dueType: "receivable" if money is arriving TO the user, "payable" if money is going OUT from the user. Only these three fields.\n- Fields belonging to the other two intents must be null. Never guess a number that isn't stated. null intent if truly unclear.`;
       const raw = await fetchAIText(prompt);
       const match = raw.match(/\{[\s\S]*\}/);
       const obj = JSON.parse(match ? match[0] : raw);
-      setForm({
-        supplier: obj.supplier || "", itemName: obj.itemName || "",
-        isB2B: obj.isB2BOrder ?? true, prepaid: obj.prepaid ?? true,
-        costing: obj.costing != null ? String(obj.costing) : "",
-        reshipEstimate: "", expectedSellingPrice: "", account: "none",
-      });
+      const intent = obj.intent === "sale_order" || obj.intent === "settle_due" ? obj.intent : "b2b_order";
+      if (intent === "sale_order") {
+        setForm({
+          intent, clientName: obj.clientName || "",
+          saleValue: obj.saleValue != null ? String(obj.saleValue) : "",
+          expectedProfit: obj.expectedProfit != null ? String(obj.expectedProfit) : "",
+          moneyReceivedNow: obj.moneyReceivedNow != null ? String(obj.moneyReceivedNow) : "",
+          moneyDue: "", channel: SALE_CHANNELS[0], isCOD: false, minAmount: "", expectedReceivableDate: "", account: "none",
+        });
+      } else if (intent === "settle_due") {
+        setForm({
+          intent, party: obj.party || "", amount: obj.amount != null ? String(obj.amount) : "",
+          dueType: obj.dueType || null, matchedKey: "", category: EXPENSE_CATEGORIES[0], account: "none",
+        });
+      } else {
+        setForm({
+          intent: "b2b_order", supplier: obj.supplier || "", itemName: obj.itemName || "",
+          prepaid: obj.prepaid ?? true, costing: obj.costing != null ? String(obj.costing) : "",
+          reshipEstimate: "", expectedSellingPrice: "", account: "none",
+        });
+      }
     } catch (err) {
       // Still open the review form blank — typing it in manually beats a dead end.
-      setForm({ supplier: "", itemName: "", isB2B: true, prepaid: true, costing: "", reshipEstimate: "", expectedSellingPrice: "", account: "none" });
+      setForm({ intent: "b2b_order", supplier: "", itemName: "", prepaid: true, costing: "", reshipEstimate: "", expectedSellingPrice: "", account: "none" });
       setError("Couldn't parse that — fill the fields in below.");
     } finally {
       setLoading(false);
@@ -1093,8 +1112,11 @@ function SmartOrderButton({ data, persist, registerActivity, setToast, triggerNo
     parseWithAI(typedText.trim());
   };
 
-  const landedCostEstimate = form ? (parseFloat(form.costing) || 0) + (parseFloat(form.reshipEstimate) || 0) : 0;
-  const potentialProfit = form ? (parseFloat(form.expectedSellingPrice) || 0) - landedCostEstimate : 0;
+  const resetAll = () => { setOpen(false); setTypedText(""); setForm(null); setError(null); };
+
+  // ---- b2b_order (original flow, unchanged behavior) ----
+  const landedCostEstimate = form?.intent === "b2b_order" ? (parseFloat(form.costing) || 0) + (parseFloat(form.reshipEstimate) || 0) : 0;
+  const potentialProfit = form?.intent === "b2b_order" ? (parseFloat(form.expectedSellingPrice) || 0) - landedCostEstimate : 0;
 
   const saveSmartOrder = () => {
     const costing = parseFloat(form.costing) || 0;
@@ -1102,14 +1124,14 @@ function SmartOrderButton({ data, persist, registerActivity, setToast, triggerNo
     if (!costing || costing <= 0 || !expectedSellingPrice || expectedSellingPrice <= 0) return;
     const reshipEstimate = parseFloat(form.reshipEstimate) || 0;
     const today = todayISO();
-    const tag = form.isB2B ? `B2B ${(form.supplier || "ORDER").toUpperCase()}` : (form.supplier || "Order");
+    const tag = `B2B ${(form.supplier || "ORDER").toUpperCase()}`;
     const itemLabel = form.itemName || tag;
 
     const investment = {
       id: Date.now(), name: itemLabel, amount: expectedSellingPrice, date: today,
       itemValue: costing + reshipEstimate, expectedProfit: expectedSellingPrice - (costing + reshipEstimate),
       itemName: form.itemName || null, qty: null,
-      source: "smart_order", supplier: form.supplier || null, isB2B: !!form.isB2B, prepaid: !!form.prepaid,
+      source: "smart_order", supplier: form.supplier || null, isB2B: true, prepaid: !!form.prepaid,
       costing, reshipEstimate, actualReshipCost: null,
       account: form.account !== "none" ? form.account : null,
       investmentType: "Inventory Stock",
@@ -1135,10 +1157,115 @@ function SmartOrderButton({ data, persist, registerActivity, setToast, triggerNo
       setToast(form.prepaid ? "COSTING LOGGED · ORDER PENDING LANDING" : "ORDER LOGGED · NOTHING PAID YET");
       setTimeout(() => setToast(null), 2000);
     }
-    setOpen(false);
-    setTypedText("");
-    setForm(null);
-    setError(null);
+    resetAll();
+  };
+
+  // ---- sale_order (new client sale — same logic as QuickActionsBar's "+ SOLD ORDER") ----
+  const saveSaleOrder = () => {
+    const profit = parseFloat(form.expectedProfit) || 0;
+    if (!profit || profit <= 0) return;
+    const due = parseFloat(form.moneyDue) || 0;
+    const received = parseFloat(form.moneyReceivedNow) || 0;
+    const saleVal = parseFloat(form.saleValue) || 0;
+    const today = todayISO();
+    const profitPct = saleVal > 0 ? Math.round((profit / saleVal) * 1000) / 10 : null;
+    const buyer = form.clientName.trim() || "buyer";
+
+    const fundDelta = {};
+    const fundBalances = { ...data.fundBalances };
+    data.funds.forEach((f) => {
+      const share = Math.round((profit * f.pct) / 100);
+      fundDelta[f.id] = share;
+      fundBalances[f.id] = (fundBalances[f.id] || 0) + share;
+    });
+    const income = {
+      id: Date.now(), amount: profit, source: "Sold Order",
+      note: `${buyer} — sale ₹${saleVal || 0}, received ₹${received || 0}${profitPct !== null ? ` (${profitPct}% margin)` : ""}`,
+      date: today, fundDelta, customerName: buyer, channel: form.channel || null, saleValue: saleVal || null,
+    };
+    let next = { ...data, income: [...data.income, income], fundBalances };
+    if (due > 0) {
+      const receivable = {
+        id: Date.now() + 1, party: buyer, amount: due, dueDate: form.expectedReceivableDate || null,
+        note: `Sold order — sale ₹${saleVal || 0}`, status: "pending", isCOD: form.isCOD,
+        minAmount: form.isCOD && form.minAmount !== "" ? parseFloat(form.minAmount) || 0 : null,
+        fromSoldOrder: true, // profit already booked above — settling this later only moves cash, never re-logs income
+      };
+      next = { ...next, receivables: [...next.receivables, receivable] };
+    }
+    next = withAccountMovement(next, form.account, "in", received, `Sold order — ${buyer}`, today);
+    if (registerActivity) next = registerActivity(next, 5);
+    persist(next);
+    if (triggerNoteAnim) triggerNoteAnim(profit, "in");
+    if (setToast) {
+      setToast(due > 0 ? `+5 XP · PROFIT LOGGED · ₹${due} MOVED TO RECEIVABLES` : "+5 XP · PROFIT LOGGED");
+      setTimeout(() => setToast(null), 2000);
+    }
+    resetAll();
+  };
+
+  // ---- settle_due (money against something already pending) ----
+  const dueCandidates = useMemo(() => {
+    if (!form || form.intent !== "settle_due") return [];
+    const q = (form.party || "").trim().toLowerCase();
+    if (!q) return [];
+    const matches = (party) => !!party && (party.toLowerCase().includes(q) || q.includes(party.toLowerCase()));
+    const recv = data.receivables.filter((r) => r.status === "pending" && matches(r.party)).map((entry) => ({ kind: "receivable", entry }));
+    const pay = data.payables.filter((p) => p.status === "pending" && matches(p.party)).map((entry) => ({ kind: "payable", entry }));
+    return [...recv, ...pay];
+  }, [form?.intent, form?.party, data.receivables, data.payables]);
+
+  useEffect(() => {
+    if (form?.intent === "settle_due" && !form.matchedKey && dueCandidates.length > 0) {
+      const preferred = dueCandidates.find((c) => c.kind === form.dueType) || dueCandidates[0];
+      setForm((f) => (f ? { ...f, matchedKey: `${preferred.kind}:${preferred.entry.id}` } : f));
+    }
+  }, [dueCandidates]);
+
+  const selectedDue = form?.intent === "settle_due" ? dueCandidates.find((c) => `${c.kind}:${c.entry.id}` === form.matchedKey) : null;
+
+  const saveSettleDue = () => {
+    if (!selectedDue) return;
+    const amt = parseFloat(form.amount) || 0;
+    if (!amt || amt <= 0) return;
+    const { kind, entry } = selectedDue;
+    const today = todayISO();
+    const remaining = Math.max(0, (entry.amount || 0) - amt);
+    const doneStatus = kind === "receivable" ? "received" : "paid";
+    const listKey = kind === "receivable" ? "receivables" : "payables";
+    const updatedList = data[listKey].map((e) => (e.id === entry.id ? { ...e, amount: remaining, status: remaining <= 0 ? doneStatus : "pending" } : e));
+
+    let next = { ...data, [listKey]: updatedList };
+    const fundDelta = {};
+    const fundBalances = { ...next.fundBalances };
+    const sign = kind === "receivable" ? 1 : -1;
+    data.funds.forEach((f) => {
+      const share = Math.round((amt * f.pct) / 100) * sign;
+      fundDelta[f.id] = share;
+      fundBalances[f.id] = (fundBalances[f.id] || 0) + share;
+    });
+
+    if (kind === "receivable") {
+      if (!entry.fromSoldOrder) {
+        const income = { id: Date.now(), amount: amt, source: entry.party, note: `${entry.party} — settlement`, date: today, fundDelta };
+        next = { ...next, income: [...next.income, income], fundBalances };
+      }
+      next = withAccountMovement(next, form.account, "in", amt, `${entry.party} — settlement`, today);
+      if (triggerNoteAnim) triggerNoteAnim(amt, "in");
+    } else {
+      const expense = { id: Date.now(), amount: amt, category: form.category, note: `${entry.party} — settlement`, date: today, unnecessary: false, fine: 0, fundDelta };
+      next = { ...next, expenses: [...next.expenses, expense], fundBalances };
+      next = withAccountMovement(next, form.account, "out", amt, `${entry.party} — settlement`, today);
+      if (triggerNoteAnim) triggerNoteAnim(amt, "out");
+    }
+
+    if (registerActivity) next = registerActivity(next, 3);
+    persist(next);
+    if (setToast) {
+      setToast(remaining <= 0 ? `SETTLED IN FULL — ${kind.toUpperCase()} CLOSED` : `PARTIAL SETTLEMENT — ₹${remaining} STILL ${kind === "receivable" ? "DUE" : "OWED"}`);
+      setTimeout(() => setToast(null), 2200);
+    }
+    resetAll();
   };
 
   return (
@@ -1150,17 +1277,17 @@ function SmartOrderButton({ data, persist, registerActivity, setToast, triggerNo
         <div style={S.calcOverlay} onClick={() => setOpen(false)}>
           <div style={S.calcModal} onClick={(e) => e.stopPropagation()}>
             <div style={S.calcHeader}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: T.ivory, display: "flex", alignItems: "center", gap: 6 }}><Zap size={14} /> SMART ORDER</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: T.ivory, display: "flex", alignItems: "center", gap: 6 }}><Zap size={14} /> SMART ENTRY</div>
               <button style={S.calcCloseBtn} onClick={() => setOpen(false)}><X size={16} color={T.ivory} /></button>
             </div>
 
             {!form && (
               <>
-                <div style={{ fontSize: 9.5, color: T.muted, marginBottom: 6 }}>TYPE THE ORDER NATURALLY — AI FIGURES OUT THE REST</div>
+                <div style={{ fontSize: 9.5, color: T.muted, marginBottom: 6 }}>TYPE IT NATURALLY — ORDERS, SALES, OR MONEY SETTLING UP</div>
                 <div style={S.formRow}>
                   <input
                     type="text"
-                    placeholder='e.g. "order aya sourcex se, prepaid hai"'
+                    placeholder='e.g. "order aya sourcex se, prepaid hai" or "15k aaya sourcex se"'
                     value={typedText}
                     onChange={(e) => setTypedText(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && submitTyped()}
@@ -1175,9 +1302,9 @@ function SmartOrderButton({ data, persist, registerActivity, setToast, triggerNo
 
             {error && <div style={{ fontSize: 11, color: T.orange, marginTop: 8, fontWeight: 700 }}>{error}</div>}
 
-            {form && (
+            {form?.intent === "b2b_order" && (
               <div style={{ ...S.formCard, marginTop: 10 }}>
-                <div style={{ fontSize: 10, color: T.muted }}>REVIEW BEFORE SAVING</div>
+                <div style={{ fontSize: 10, color: T.muted }}>REVIEW BEFORE SAVING — NEW SUPPLIER ORDER</div>
                 <div style={S.formRow}>
                   <input type="text" value={form.itemName} onChange={(e) => setForm({ ...form, itemName: e.target.value })} style={S.input} placeholder="item name" />
                   <input type="text" value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} style={S.input} placeholder="supplier" />
@@ -1200,6 +1327,77 @@ function SmartOrderButton({ data, persist, registerActivity, setToast, triggerNo
                   {form.prepaid ? "COSTING LOGS AS AN EXPENSE NOW — RESHIP LOGS WHEN IT LANDS" : "NOTHING LOGS YET — BOTH LOG WHEN IT LANDS"}
                 </div>
                 <button style={S.submitBtnGreen} className="npop" onClick={saveSmartOrder}>SAVE ORDER</button>
+              </div>
+            )}
+
+            {form?.intent === "sale_order" && (
+              <div style={{ ...S.formCard, marginTop: 10 }}>
+                <div style={{ fontSize: 10, color: T.muted }}>REVIEW BEFORE SAVING — NEW CLIENT SALE</div>
+                <input type="text" value={form.clientName} onChange={(e) => setForm({ ...form, clientName: e.target.value })} style={{ ...S.input, width: "100%" }} placeholder="client/buyer name" />
+                <div style={S.formRow}>
+                  <AmountInput placeholder="sale value" value={form.saleValue} onChange={(v) => setForm({ ...form, saleValue: v })} style={S.input} className="tnum" />
+                  <AmountInput placeholder="expected profit" value={form.expectedProfit} onChange={(v) => setForm({ ...form, expectedProfit: v })} style={S.input} className="tnum" />
+                </div>
+                <div style={S.formRow}>
+                  <AmountInput placeholder="money received now" value={form.moneyReceivedNow} onChange={(v) => setForm({ ...form, moneyReceivedNow: v })} style={S.input} className="tnum" />
+                  <AmountInput placeholder="money due later" value={form.moneyDue} onChange={(v) => setForm({ ...form, moneyDue: v })} style={S.input} className="tnum" />
+                </div>
+                {parseFloat(form.moneyDue) > 0 && (
+                  <>
+                    <label style={S.checkboxRow}>
+                      <input type="checkbox" checked={form.isCOD} onChange={(e) => setForm({ ...form, isCOD: e.target.checked })} />
+                      COD ORDER — MIGHT COME BACK AS RTO
+                    </label>
+                    <input type="date" value={form.expectedReceivableDate} onChange={(e) => setForm({ ...form, expectedReceivableDate: e.target.value })} style={{ ...S.input, width: "100%" }} className="tnum" />
+                  </>
+                )}
+                <select value={form.account} onChange={(e) => setForm({ ...form, account: e.target.value })} style={S.select}>
+                  {ACCOUNT_OPTIONS_IN.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+                </select>
+                <select value={form.channel} onChange={(e) => setForm({ ...form, channel: e.target.value })} style={S.select}>
+                  {SALE_CHANNELS.map((c) => <option key={c} value={c}>SOLD VIA — {c.toUpperCase()}</option>)}
+                </select>
+                <div style={{ fontSize: 9.5, color: T.muted }}>
+                  {parseFloat(form.moneyDue) > 0 ? "PROFIT LOGS NOW — THE FULL SALE AMOUNT ONLY HITS THE ACCOUNT WHEN YOU SETTLE THE DUE LATER" : "PROFIT LOGS NOW"}
+                </div>
+                <button style={S.submitBtnGreen} className="npop" onClick={saveSaleOrder}>SAVE SALE</button>
+              </div>
+            )}
+
+            {form?.intent === "settle_due" && (
+              <div style={{ ...S.formCard, marginTop: 10 }}>
+                <div style={{ fontSize: 10, color: T.muted }}>REVIEW BEFORE SAVING — SETTLING SOMETHING PENDING</div>
+                <input type="text" value={form.party} onChange={(e) => setForm({ ...form, party: e.target.value, matchedKey: "" })} style={{ ...S.input, width: "100%" }} placeholder="party name" />
+                {dueCandidates.length === 0 ? (
+                  <div style={{ fontSize: 11, color: T.orange, fontWeight: 700 }}>NO MATCHING PENDING DUE FOUND{form.party ? ` FOR "${form.party}"` : ""}</div>
+                ) : (
+                  <select value={form.matchedKey} onChange={(e) => setForm({ ...form, matchedKey: e.target.value })} style={{ ...S.select, width: "100%" }}>
+                    {dueCandidates.map((c) => (
+                      <option key={`${c.kind}:${c.entry.id}`} value={`${c.kind}:${c.entry.id}`}>
+                        {c.kind.toUpperCase()} · {c.entry.party} · {fmt(c.entry.amount)} PENDING
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <AmountInput placeholder="amount received/paid now" value={form.amount} onChange={(v) => setForm({ ...form, amount: v })} style={{ ...S.input, width: "100%" }} className="tnum" />
+                {selectedDue?.kind === "payable" && (
+                  <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} style={S.select}>
+                    {EXPENSE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                )}
+                <select value={form.account} onChange={(e) => setForm({ ...form, account: e.target.value })} style={S.select}>
+                  {(selectedDue?.kind === "payable" ? ACCOUNT_OPTIONS_OUT : ACCOUNT_OPTIONS_IN).map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+                </select>
+                <div style={{ fontSize: 9.5, color: T.muted }}>
+                  {selectedDue?.kind === "receivable" && selectedDue.entry.fromSoldOrder
+                    ? "PROFIT ALREADY BOOKED — THIS JUST MOVES THE CASH IN"
+                    : selectedDue?.kind === "receivable"
+                    ? "LOGS AS INCOME + MOVES THE CASH IN"
+                    : selectedDue?.kind === "payable"
+                    ? "LOGS AS AN EXPENSE + MOVES THE CASH OUT"
+                    : ""}
+                </div>
+                <button style={S.submitBtnGreen} className="npop" onClick={saveSettleDue} disabled={!selectedDue}>SETTLE</button>
               </div>
             )}
           </div>
@@ -3361,6 +3559,7 @@ function QuickActionsBar({ data, persist, registerActivity, setToast, triggerNot
         const receivable = {
           id: Date.now() + 1, party: so.recipientName || "buyer", amount: due, dueDate: so.expectedReceivableDate || null, note: `Sold order — sale ₹${so.saleValue || 0}`, status: "pending",
           isCOD: so.isCOD, minAmount: so.isCOD && so.minAmount !== "" ? parseFloat(so.minAmount) || 0 : null,
+          fromSoldOrder: true, // profit already booked above — settling this later moves cash only, never re-logs income
         };
         next = { ...next, receivables: [...next.receivables, receivable] };
       }
@@ -4287,6 +4486,7 @@ function ExpenseTab({ data, persist, registerActivity, setToast, triggerNoteAnim
         id: Date.now() + 1, party: form.recipientName || "buyer", amount: due,
         dueDate: form.expectedReceivableDate || null,
         note: `${itemLabel ? itemLabel + " — " : ""}Sold order — sale ₹${form.saleValue || 0}`, status: "pending",
+        fromSoldOrder: true, // profit already booked above — settling this later moves cash only, never re-logs income
       };
       next = { ...next, receivables: [...next.receivables, receivable] };
     }
