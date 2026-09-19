@@ -4,7 +4,7 @@
 // generateContent format, so src/App.jsx needed no changes when we switched
 // providers — free tier, unlike Anthropic's pay-as-you-go billing.
 
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 
 function toGeminiContents(messages) {
   return (messages || []).map((m) => ({

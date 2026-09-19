@@ -22,7 +22,7 @@ Vercel project's environment variables for deployment:
 | Variable | Used by | Purpose |
 |---|---|---|
 | `GEMINI_API_KEY` | `api/ai-proxy.js`, `api/_lib/money-agent.js` (Telegram + WhatsApp) | Calls to the Gemini API (free tier — get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)) |
-| `GEMINI_MODEL` | same as above | Optional — overrides the default `gemini-2.5-flash` |
+| `GEMINI_MODEL` | same as above | Optional — overrides the default `gemini-3.6-flash` |
 | `TELEGRAM_BOT_TOKEN` | `api/telegram-webhook.js`, `api/cron-summary.js` | Telegram Bot API access |
 | `CRON_SECRET` | `api/cron-summary.js` | Shared secret so only your scheduler can trigger the summary endpoint |
 | `AGENT_BRIDGE_SECRET` | `api/agent-message.js` | Shared secret so only your own external bot (e.g. a self-hosted WhatsApp bot) can call the money agent |

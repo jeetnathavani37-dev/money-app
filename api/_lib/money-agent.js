@@ -8,7 +8,7 @@
 
 import { loadState, saveState } from "./supabase.js";
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 const MAX_TURNS = 5; // hard cap on tool-call round trips per incoming message
 const MAX_MEMORY_TURNS = 16; // plain user/assistant turns kept per chat, for follow-up questions
 
