@@ -1,16 +1,24 @@
-# Business memory — Smart Entry flow (B2B orders, sales, settlements)
+# Business memory — James (the one lightning-bolt entry point)
 
-This documents the rules behind the "Smart Entry" feature (the ⚡ button in the web app;
-`log_b2b_order`/`log_sale_order`/`settle_due`/`confirm_order_landed` in the bots) so anyone
-(human or AI) working on this code later doesn't have to re-derive them. It's static
-documentation — the app also keeps its own *runtime* memory (see "Runtime memory" below),
-which is different.
+This documents the rules behind "James" — `JamesButton` in the web app (the ⚡ FAB), and its
+tool equivalents in `api/_lib/money-agent.js` for Telegram/WhatsApp — so anyone (human or AI)
+working on this code later doesn't have to re-derive them. It's static documentation — the
+app also keeps its own *runtime* memory (see "Runtime memory" below), which is different.
 
-One box, three intents, all AI-classified from one free-text line: `b2b_order` (a new
-incoming supplier order), `sale_order` (a new client sale), `settle_due` (money that just
-moved against something already pending). The common thread across all three: **a pending
-balance never moves cash or logs new income/expense on its own — only `settle_due` /
-`confirm_order_landed` actually do that**, whenever the deferred amount is finally confirmed.
+One box, six intents, all AI-classified from one free-text line:
+- `b2b_order` — a new incoming supplier order (two-stage, see below)
+- `sale_order` — a new client sale (profit now, cash sometimes later)
+- `quick_entry` — a plain income/expense/waste with nothing else attached
+- `cashout` — inventory bought now to resell later (mirrors "+ CASHOUT")
+- `add_due` — a brand-new amount owed to/by someone, nothing paid yet (mirrors Dues tab's
+  manual add)
+- `settle_due` — money that just moved against something already pending
+
+The common thread across the staged ones (`b2b_order`, `sale_order`'s due amount, `add_due`):
+**a pending balance never moves cash or logs new income/expense on its own — only
+`settle_due` / `confirm_order_landed` actually do that**, whenever the deferred amount is
+finally confirmed. `quick_entry` and `cashout` have no staging; they're one-shot, matching the
+manual forms they mirror.
 
 ## The problem this solves
 
@@ -21,7 +29,7 @@ time would mean guessing a number that's about to change. So the flow has two st
 
 ## Stage 1 — order placed
 
-Entry points: `SmartOrderButton` (web app, `src/App.jsx`) and the `log_b2b_order` tool
+Entry points: `JamesButton` (web app, `src/App.jsx`) and the `log_b2b_order` tool
 (Telegram/WhatsApp, `api/_lib/money-agent.js`) — both produce the identical `investments`
 record shape below, so it doesn't matter which surface created an order; every later step
 treats them the same.
@@ -98,6 +106,22 @@ Before this feature, `DuesTab`'s plain "mark received/paid" checkbox toggle (`to
 in `src/App.jsx`) only ever flipped `status` — it never moved money into an account or logged
 income/expense. That toggle is unchanged and still has that limitation; `settle_due` (via the
 ⚡ button or the bots) is the path that actually moves money correctly.
+
+## quick_entry and cashout
+
+These two are deliberately unstaged one-shots — they mirror `VoiceLogButton.saveParsed` and
+`QuickActionsBar`'s Cashout branch respectively, byte-for-byte in logic (same fund-delta math,
+same fields). If either manual form's logic ever changes, check whether James's copy needs
+the same change — there's no shared helper between them (matching this codebase's existing
+pattern of small, duplicated inline logic across quick-add surfaces rather than a central
+`addIncome`/`addExpense` utility).
+
+## add_due
+
+Creates a plain `receivables`/`payables` entry exactly like `DuesTab.addEntry` — `status:
+"pending"`, nothing logged to income/expense/accounts. It exists so a brand-new due can be
+recorded by typing a line instead of opening the Dues tab; `settle_due` is what later resolves
+it, using the exact matching and money-movement rules described above.
 
 ## Runtime memory (distinct from this file)
 

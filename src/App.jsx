@@ -1062,7 +1062,14 @@ function VoiceLogButton({ data, persist, registerActivity, setToast, triggerNote
 // flow), a new client sale (sale_order — mirrors QuickActionsBar's "+ SOLD ORDER"), and money
 // that just moved against something ALREADY pending (settle_due — partial or full receivable/
 // payable settlement, which previously had no way to actually move cash into an account).
-function SmartOrderButton({ data, persist, registerActivity, setToast, triggerNoteAnim }) {
+const JAMES_INTENTS = ["sale_order", "settle_due", "quick_entry", "cashout", "add_due"];
+
+// "James" — the one lightning-bolt entry point for everything the app's manual forms already
+// do: a plain income/expense/waste, a new supplier order, a new client sale, inventory bought
+// to resell later, a new amount owed to/by someone, and settling something already pending.
+// One free-text line, AI-classified into an intent, then a short review form before anything
+// touches the real ledger.
+function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAnim }) {
   const [open, setOpen] = useState(false);
   const [typedText, setTypedText] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1073,11 +1080,11 @@ function SmartOrderButton({ data, persist, registerActivity, setToast, triggerNo
     setLoading(true);
     setError(null);
     try {
-      const prompt = `Parse this business message into JSON. Text: "${text}"\nThis app tracks a small resale business: incoming supplier orders (costed, shipped, resold), new client sales (profit booked now, some money sometimes due later), and money that just arrived or was just paid against something ALREADY pending.\nReturn ONLY valid JSON, no other text, in this exact shape:\n{"intent":"b2b_order"|"sale_order"|"settle_due"|null,"supplier":string|null,"itemName":string|null,"prepaid":boolean|null,"costing":number|null,"clientName":string|null,"saleValue":number|null,"expectedProfit":number|null,"moneyReceivedNow":number|null,"party":string|null,"amount":number|null,"dueType":"receivable"|"payable"|null}\nRules:\n- intent "b2b_order": a NEW incoming order FROM a supplier that still needs costing/shipping (e.g. "order aya sourcex se, prepaid hai"). Fill supplier/itemName/prepaid/costing only.\n- intent "sale_order": a NEW sale to a client being logged for the first time (e.g. "20k order client ka", "sold to Rahul for 15k, 2k profit"). Fill clientName/saleValue/expectedProfit/moneyReceivedNow only — moneyReceivedNow is cash in hand right now, usually 0 or unmentioned.\n- intent "settle_due": money that just arrived or was just paid against something ALREADY pending, not a new order or sale (e.g. "sourcex se 15k agya", "rahul ne 5k diya", "supplier ko 3k pay kiya"). Fill party (who), amount (how much), and dueType: "receivable" if money is arriving TO the user, "payable" if money is going OUT from the user. Only these three fields.\n- Fields belonging to the other two intents must be null. Never guess a number that isn't stated. null intent if truly unclear.`;
+      const prompt = `Parse this business message into JSON. Text: "${text}"\nThis is James, the money-ops brain for a small resale business. It handles: incoming supplier orders (costed, shipped, resold), new client sales (profit booked now, some money sometimes due later), plain income/expense/waste with no order attached, inventory bought now to resell later, a brand-new amount owed to/by someone (nothing paid yet), and money that just arrived or was just paid against something ALREADY pending.\nReturn ONLY valid JSON, no other text, in this exact shape:\n{"intent":"b2b_order"|"sale_order"|"settle_due"|"quick_entry"|"cashout"|"add_due"|null,"supplier":string|null,"itemName":string|null,"prepaid":boolean|null,"costing":number|null,"clientName":string|null,"saleValue":number|null,"expectedProfit":number|null,"moneyReceivedNow":number|null,"party":string|null,"amount":number|null,"dueType":"receivable"|"payable"|null,"entryType":"income"|"expense"|"waste"|null,"entryLabel":string|null,"entryNote":string|null,"expectedSellingPrice":number|null}\nRules:\n- intent "b2b_order": a NEW incoming order FROM a supplier that still needs costing/shipping (e.g. "order aya sourcex se, prepaid hai"). Fill supplier/itemName/prepaid/costing only.\n- intent "sale_order": a NEW sale to a client being logged for the first time (e.g. "20k order client ka", "sold to Rahul for 15k, 2k profit"). Fill clientName/saleValue/expectedProfit/moneyReceivedNow only — moneyReceivedNow is cash in hand right now, usually 0 or unmentioned.\n- intent "settle_due": money that just arrived or was just paid against something ALREADY pending, not a new order/sale/due (e.g. "sourcex se 15k agya", "rahul ne 5k diya", "supplier ko 3k pay kiya"). Fill party/amount/dueType only — dueType "receivable" if money is arriving TO the user, "payable" if going OUT.\n- intent "quick_entry": a plain income, expense, or impulsive/wasteful spend with no order, client, or pending due involved (e.g. "500 spent on food", "1000 aaya freelance se", "200 udaya drinks pe"). Fill entryType ("income"/"expense"/"waste")/amount/entryLabel (category or source)/entryNote only.\n- intent "cashout": inventory/stock bought now to resell later, NOT part of a named supplier-order flow (e.g. "bought 5 shirts for 2000, will sell for 3500"). Fill itemName/costing (cost)/expectedSellingPrice/expectedProfit only.\n- intent "add_due": recording that someone owes the user money, or the user owes someone, with NOTHING paid yet — not settling an existing one (e.g. "Rahul owes me 5000", "I owe the supplier 3000"). Fill party/amount/dueType only.\n- Fields belonging to other intents must be null. Never guess a number that isn't stated. null intent if truly unclear.`;
       const raw = await fetchAIText(prompt);
       const match = raw.match(/\{[\s\S]*\}/);
       const obj = JSON.parse(match ? match[0] : raw);
-      const intent = obj.intent === "sale_order" || obj.intent === "settle_due" ? obj.intent : "b2b_order";
+      const intent = JAMES_INTENTS.includes(obj.intent) ? obj.intent : "b2b_order";
       if (intent === "sale_order") {
         setForm({
           intent, clientName: obj.clientName || "",
@@ -1090,6 +1097,22 @@ function SmartOrderButton({ data, persist, registerActivity, setToast, triggerNo
         setForm({
           intent, party: obj.party || "", amount: obj.amount != null ? String(obj.amount) : "",
           dueType: obj.dueType || null, matchedKey: "", category: EXPENSE_CATEGORIES[0], account: "none",
+        });
+      } else if (intent === "quick_entry") {
+        setForm({
+          intent, entryType: obj.entryType === "expense" || obj.entryType === "waste" ? obj.entryType : "income",
+          amount: obj.amount != null ? String(obj.amount) : "", entryLabel: obj.entryLabel || "", entryNote: obj.entryNote || "",
+        });
+      } else if (intent === "cashout") {
+        setForm({
+          intent, itemName: obj.itemName || "", costing: obj.costing != null ? String(obj.costing) : "",
+          expectedSellingPrice: obj.expectedSellingPrice != null ? String(obj.expectedSellingPrice) : "",
+          expectedProfit: obj.expectedProfit != null ? String(obj.expectedProfit) : "", expectedArrival: "", account: "none",
+        });
+      } else if (intent === "add_due") {
+        setForm({
+          intent, party: obj.party || "", amount: obj.amount != null ? String(obj.amount) : "",
+          dueType: obj.dueType === "payable" ? "payable" : "receivable", dueDate: "", entryNote: obj.entryNote || "",
         });
       } else {
         setForm({
@@ -1268,6 +1291,84 @@ function SmartOrderButton({ data, persist, registerActivity, setToast, triggerNo
     resetAll();
   };
 
+  // ---- quick_entry (plain income/expense/waste — same logic as VoiceLogButton's saveParsed) ----
+  const saveQuickEntry = () => {
+    const amt = parseFloat(form.amount);
+    if (!amt || amt <= 0) return;
+    const today = todayISO();
+    if (form.entryType === "income") {
+      const fundDelta = {};
+      const fundBalances = { ...data.fundBalances };
+      data.funds.forEach((f) => {
+        const share = Math.round((amt * f.pct) / 100);
+        fundDelta[f.id] = share;
+        fundBalances[f.id] = (fundBalances[f.id] || 0) + share;
+      });
+      const entry = { id: Date.now(), amount: amt, source: form.entryLabel || "James Entry", note: form.entryNote || "", date: today, fundDelta };
+      let next = { ...data, income: [...data.income, entry], fundBalances };
+      if (registerActivity) next = registerActivity(next, 5);
+      persist(next);
+      if (triggerNoteAnim) triggerNoteAnim(amt, "in");
+    } else {
+      const isWaste = form.entryType === "waste";
+      const fine = isWaste ? tieredFine(amt) : 0;
+      const total = amt + fine;
+      const fundDelta = {};
+      const fundBalances = { ...data.fundBalances };
+      data.funds.forEach((f) => {
+        const share = Math.round((total * f.pct) / 100);
+        fundDelta[f.id] = -share;
+        fundBalances[f.id] = (fundBalances[f.id] || 0) - share;
+      });
+      const entry = { id: Date.now(), amount: total, category: form.entryLabel || "Other", note: form.entryNote || "", date: today, unnecessary: isWaste, fine, fundDelta };
+      let next = { ...data, expenses: [...data.expenses, entry], fundBalances };
+      if (registerActivity) next = registerActivity(next, 3);
+      persist(next);
+      if (triggerNoteAnim) triggerNoteAnim(total, "out");
+    }
+    if (setToast) {
+      setToast("⚡ ENTRY SAVED");
+      setTimeout(() => setToast(null), 1600);
+    }
+    resetAll();
+  };
+
+  // ---- cashout (inventory bought now to resell later — same logic as QuickActionsBar's "+ CASHOUT") ----
+  const saveCashout = () => {
+    const sellingPrice = parseFloat(form.expectedSellingPrice);
+    if (!sellingPrice || sellingPrice <= 0) return;
+    const today = todayISO();
+    const costing = parseFloat(form.costing) || 0;
+    const itemLabel = form.itemName.trim() || "Cashout";
+    const investment = {
+      id: Date.now(), name: itemLabel, amount: sellingPrice, date: today,
+      itemValue: costing, expectedProfit: parseFloat(form.expectedProfit) || sellingPrice - costing,
+      expectedArrival: form.expectedArrival || null, itemName: form.itemName || null, qty: null,
+      source: "inventory_cashout", account: form.account !== "none" ? form.account : null, investmentType: "Inventory Stock", status: "in_stock",
+    };
+    persist({ ...data, investments: [...data.investments, investment] });
+    if (setToast) {
+      setToast("LOGGED TO INVESTMENTS · PENDING ARRIVAL");
+      setTimeout(() => setToast(null), 2000);
+    }
+    resetAll();
+  };
+
+  // ---- add_due (a brand-new amount owed, nothing paid yet — same logic as DuesTab's addEntry) ----
+  const saveAddDue = () => {
+    const amt = parseFloat(form.amount);
+    if (!form.party.trim() || !amt || amt <= 0) return;
+    const kind = form.dueType === "payable" ? "payable" : "receivable";
+    const listKey = kind === "receivable" ? "receivables" : "payables";
+    const entry = { id: Date.now(), party: form.party.trim(), amount: amt, purpose: "personal", dueDate: form.dueDate || null, note: form.entryNote || "", status: "pending", isCOD: false, minAmount: null };
+    persist({ ...data, [listKey]: [...data[listKey], entry] });
+    if (setToast) {
+      setToast(`${kind.toUpperCase()} ADDED — SETTLE IT WITH JAMES LATER`);
+      setTimeout(() => setToast(null), 2000);
+    }
+    resetAll();
+  };
+
   return (
     <>
       <button style={S.smartOrderFab} onClick={() => setOpen(true)}>
@@ -1277,17 +1378,17 @@ function SmartOrderButton({ data, persist, registerActivity, setToast, triggerNo
         <div style={S.calcOverlay} onClick={() => setOpen(false)}>
           <div style={S.calcModal} onClick={(e) => e.stopPropagation()}>
             <div style={S.calcHeader}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: T.ivory, display: "flex", alignItems: "center", gap: 6 }}><Zap size={14} /> SMART ENTRY</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: T.ivory, display: "flex", alignItems: "center", gap: 6 }}><Zap size={14} /> JAMES</div>
               <button style={S.calcCloseBtn} onClick={() => setOpen(false)}><X size={16} color={T.ivory} /></button>
             </div>
 
             {!form && (
               <>
-                <div style={{ fontSize: 9.5, color: T.muted, marginBottom: 6 }}>TYPE IT NATURALLY — ORDERS, SALES, OR MONEY SETTLING UP</div>
+                <div style={{ fontSize: 9.5, color: T.muted, marginBottom: 6 }}>TYPE ANYTHING — ORDERS, SALES, EXPENSES, DUES, JAMES SORTS IT</div>
                 <div style={S.formRow}>
                   <input
                     type="text"
-                    placeholder='e.g. "order aya sourcex se, prepaid hai" or "15k aaya sourcex se"'
+                    placeholder='e.g. "500 spent on food" or "15k aaya sourcex se"'
                     value={typedText}
                     onChange={(e) => setTypedText(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && submitTyped()}
@@ -1398,6 +1499,61 @@ function SmartOrderButton({ data, persist, registerActivity, setToast, triggerNo
                     : ""}
                 </div>
                 <button style={S.submitBtnGreen} className="npop" onClick={saveSettleDue} disabled={!selectedDue}>SETTLE</button>
+              </div>
+            )}
+
+            {form?.intent === "quick_entry" && (
+              <div style={{ ...S.formCard, marginTop: 10 }}>
+                <div style={{ fontSize: 10, color: T.muted }}>REVIEW BEFORE SAVING</div>
+                <div style={S.formRow}>
+                  <select value={form.entryType} onChange={(e) => setForm({ ...form, entryType: e.target.value })} style={S.select}>
+                    <option value="income">Income</option>
+                    <option value="expense">Expense</option>
+                    <option value="waste">Waste</option>
+                  </select>
+                  <AmountInput placeholder="amount" value={form.amount} onChange={(v) => setForm({ ...form, amount: v })} style={S.input} className="tnum" />
+                </div>
+                <input type="text" value={form.entryLabel} onChange={(e) => setForm({ ...form, entryLabel: e.target.value })} style={{ ...S.input, width: "100%" }} placeholder="category/source" />
+                <input type="text" value={form.entryNote} onChange={(e) => setForm({ ...form, entryNote: e.target.value })} style={{ ...S.input, width: "100%" }} placeholder="note" />
+                <button style={S.submitBtnGreen} className="npop" onClick={saveQuickEntry}>SAVE ENTRY</button>
+              </div>
+            )}
+
+            {form?.intent === "cashout" && (
+              <div style={{ ...S.formCard, marginTop: 10 }}>
+                <div style={{ fontSize: 10, color: T.muted }}>REVIEW BEFORE SAVING — INVENTORY BOUGHT TO RESELL</div>
+                <input type="text" value={form.itemName} onChange={(e) => setForm({ ...form, itemName: e.target.value })} style={{ ...S.input, width: "100%" }} placeholder="item name" />
+                <div style={S.formRow}>
+                  <AmountInput placeholder="cost" value={form.costing} onChange={(v) => setForm({ ...form, costing: v })} style={S.input} className="tnum" />
+                  <AmountInput placeholder="expected selling price" value={form.expectedSellingPrice} onChange={(v) => setForm({ ...form, expectedSellingPrice: v })} style={S.input} className="tnum" />
+                </div>
+                <div style={S.formRow}>
+                  <AmountInput placeholder="expected profit" value={form.expectedProfit} onChange={(v) => setForm({ ...form, expectedProfit: v })} style={S.input} className="tnum" />
+                  <input type="date" value={form.expectedArrival} onChange={(e) => setForm({ ...form, expectedArrival: e.target.value })} style={S.input} className="tnum" />
+                </div>
+                <select value={form.account} onChange={(e) => setForm({ ...form, account: e.target.value })} style={S.select}>
+                  {ACCOUNT_OPTIONS.map((a) => <option key={a.id} value={a.id}>{a.id === "none" ? a.label : `WILL ARRIVE IN → ${a.label}`}</option>)}
+                </select>
+                <div style={{ fontSize: 9.5, color: T.muted }}>LOGS TO INVESTMENTS — NOT PROFIT, NOT AN EXPENSE, YET</div>
+                <button style={S.submitBtnPurple} className="npop" onClick={saveCashout}>SAVE CASHOUT</button>
+              </div>
+            )}
+
+            {form?.intent === "add_due" && (
+              <div style={{ ...S.formCard, marginTop: 10 }}>
+                <div style={{ fontSize: 10, color: T.muted }}>REVIEW BEFORE SAVING — NOTHING PAID YET</div>
+                <input type="text" value={form.party} onChange={(e) => setForm({ ...form, party: e.target.value })} style={{ ...S.input, width: "100%" }} placeholder="party name" />
+                <div style={S.formRow}>
+                  <AmountInput placeholder="amount" value={form.amount} onChange={(v) => setForm({ ...form, amount: v })} style={S.input} className="tnum" />
+                  <select value={form.dueType} onChange={(e) => setForm({ ...form, dueType: e.target.value })} style={S.select}>
+                    <option value="receivable">THEY OWE ME</option>
+                    <option value="payable">I OWE THEM</option>
+                  </select>
+                </div>
+                <input type="date" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} style={{ ...S.input, width: "100%" }} className="tnum" placeholder="due date (optional)" />
+                <input type="text" value={form.entryNote} onChange={(e) => setForm({ ...form, entryNote: e.target.value })} style={{ ...S.input, width: "100%" }} placeholder="note (optional)" />
+                <div style={{ fontSize: 9.5, color: T.muted }}>NOTHING LOGS TO INCOME/EXPENSE OR YOUR ACCOUNT — SETTLE IT WITH JAMES LATER</div>
+                <button style={S.submitBtnOrange} className="npop" onClick={saveAddDue}>ADD {form.dueType === "payable" ? "PAYABLE" : "RECEIVABLE"}</button>
               </div>
             )}
           </div>
@@ -2049,7 +2205,7 @@ export default function Khata() {
       <FloatingCalcButton onClick={() => setCalcOpen(true)} />
 
       <VoiceLogButton data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />
-      <SmartOrderButton data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />
+      <JamesButton data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />
       {calcOpen && (
         <CalculatorModal
           onClose={() => setCalcOpen(false)}

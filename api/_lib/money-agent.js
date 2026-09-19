@@ -34,6 +34,8 @@ CORE ACTIONS — always via tools, never by guessing:
 7. REMEMBER a durable business pattern worth not re-explaining next time (a typical reship cost for a supplier, a recurring margin, a phrasing habit) — remember tool. Use this sparingly, only for things genuinely worth carrying forward, especially right after confirm_order_landed reveals a real number worth keeping.
 8. LOG A NEW CLIENT SALE (e.g. "sold to Rahul for 20k, 2k profit, got 5k now") — log_sale_order tool. The profit books as income immediately regardless of what's actually been collected. Any amount NOT yet received becomes a receivable — it does not count as cash in hand until settle_due confirms it later.
 9. SETTLE something ALREADY pending — money that just arrived or was just paid, not a new order or sale (e.g. "sourcex se 15k agya", "rahul ne baaki 15k de diya", "supplier ko 3k pay kiya") — settle_due tool. This is what actually moves money for a receivable/payable — a sale's "money due" or a B2B order's cost sit inert until this fires. Matches by party name; supports partial settlement (whatever's left stays pending).
+10. LOG INVENTORY BOUGHT NOW TO RESELL LATER, not part of a named supplier-order flow (e.g. "bought 5 shirts for 2000, will sell for 3500") — log_cashout tool.
+11. RECORD A BRAND-NEW AMOUNT OWED, nothing paid yet — someone owes the user, or the user owes someone (e.g. "Rahul owes me 5000", "I owe the supplier 3000") — add_due tool. This only records it; settle_due is what moves money later.
 
 HOW TO APPLY THAT CRAFT to what get_financial_data returns:
 - Landed cost discipline: real cost of goods = item price + international shipping + customs duty + payment fees. If an expense category is quietly eating margin, name it and the number.
@@ -161,6 +163,32 @@ const TOOLS = [
       required: ["party", "amount"],
     },
   },
+  {
+    name: "log_cashout",
+    description: "Log inventory/stock bought now to resell later, not part of a named supplier-order flow (that's log_b2b_order instead). Doesn't touch income or expenses — this is purely a staged inventory record.",
+    input_schema: {
+      type: "object",
+      properties: {
+        item_name: { type: "string", description: "item/product name" },
+        costing: { type: "number", description: "cost price" },
+        expected_selling_price: { type: "number", description: "expected eventual selling price" },
+      },
+      required: ["item_name", "costing", "expected_selling_price"],
+    },
+  },
+  {
+    name: "add_due",
+    description: "Record a brand-new amount owed to the user or by the user, with nothing paid yet. Never use this to settle an existing one — that's settle_due.",
+    input_schema: {
+      type: "object",
+      properties: {
+        party: { type: "string", description: "who owes, or who is owed" },
+        amount: { type: "number", description: "amount" },
+        due_type: { type: "string", enum: ["receivable", "payable"], description: "'receivable' if they owe the user, 'payable' if the user owes them" },
+      },
+      required: ["party", "amount", "due_type"],
+    },
+  },
 ];
 
 // Gemini's function-declaration schema is a JSON-Schema subset with upper-cased type
@@ -280,7 +308,7 @@ function computeUndo(data) {
   return { data: { ...data, expenses: data.expenses.slice(0, -1), fundBalances }, meta: `Removed expense of ₹${lastExpense.amount} (${lastExpense.category})` };
 }
 
-// Stage 1 of a smart order — mirrors SmartOrderButton.saveSmartOrder in src/App.jsx (same
+// Stage 1 of a smart order — mirrors JamesButton.saveSmartOrder in src/App.jsx (same
 // `investments` shape, same "pending_landing_prepaid"/"pending_landing_unpaid" statuses) so
 // records created from chat and from the web app are indistinguishable to everything downstream,
 // including the web app's own "mark landed"/"mark sold" flows.
@@ -357,7 +385,7 @@ function computeConfirmOrderLanded(data, input) {
   };
 }
 
-// Mirrors src/App.jsx's SmartOrderButton.saveSaleOrder — profit books as income immediately;
+// Mirrors src/App.jsx's JamesButton.saveSaleOrder — profit books as income immediately;
 // whatever isn't received yet becomes a receivable (fromSoldOrder: true) that only moves money
 // once settle_due below actually confirms it.
 function computeLogSaleOrder(data, input) {
@@ -434,6 +462,40 @@ function computeSettleDue(data, input) {
     meta: remaining <= 0
       ? `Settled in full — ${kind} with ${entry.party} closed.`
       : `Partial settlement — ₹${remaining} still ${kind === "receivable" ? "due from" : "owed to"} ${entry.party}.`,
+  };
+}
+
+// Mirrors src/App.jsx's JamesButton.saveCashout / QuickActionsBar's "+ CASHOUT" — a staged
+// inventory record that touches nothing else until it's later marked sold.
+function computeLogCashout(data, input) {
+  const sellingPrice = Number(input.expected_selling_price);
+  if (!sellingPrice || sellingPrice <= 0) return null;
+  const costing = Number(input.costing) || 0;
+  const itemName = (input.item_name || "").trim() || "Cashout";
+  const today = todayISO();
+  const investment = {
+    id: Date.now(), name: itemName, amount: sellingPrice, date: today,
+    itemValue: costing, expectedProfit: sellingPrice - costing,
+    itemName, qty: null, source: "inventory_cashout", account: null, investmentType: "Inventory Stock", status: "in_stock",
+  };
+  return {
+    data: { ...data, investments: [...data.investments, investment] },
+    meta: `Logged ${itemName} to investments — pending sale, ~₹${Math.round(sellingPrice - costing)} expected profit.`,
+  };
+}
+
+// Mirrors src/App.jsx's JamesButton.saveAddDue / DuesTab.addEntry — a plain pending record;
+// settle_due above is what later moves money for it.
+function computeAddDue(data, input) {
+  const amt = Number(input.amount);
+  const party = (input.party || "").trim();
+  if (!party || !amt || amt <= 0) return null;
+  const kind = input.due_type === "payable" ? "payable" : "receivable";
+  const listKey = kind === "receivable" ? "receivables" : "payables";
+  const entry = { id: Date.now(), party, amount: amt, purpose: "personal", dueDate: null, note: "", status: "pending", isCOD: false, minAmount: null };
+  return {
+    data: { ...data, [listKey]: [...data[listKey], entry] },
+    meta: `Added ${kind} — ${party}, ₹${amt}. Nothing moved yet; use settle_due once it's actually paid.`,
   };
 }
 
@@ -751,6 +813,40 @@ export async function runMoneyAgent({ channel, chatKey, state, userMessage }) {
           const outcome = computeSettleDue(data, args);
           if (!outcome) {
             functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Couldn't find a matching pending receivable or payable for that party — ask the user to clarify which one." } } });
+            continue;
+          }
+          const saved = await saveState(outcome.data, updatedAt);
+          if (saved.ok) {
+            data = outcome.data;
+            updatedAt = saved.updatedAt;
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { result: outcome.meta } } });
+          } else {
+            const fresh = await loadState();
+            data = fresh.data;
+            updatedAt = fresh.updatedAt;
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Save conflicted with another concurrent write — state reloaded, please retry." } } });
+          }
+        } else if (fc.name === "log_cashout") {
+          const outcome = computeLogCashout(data, args);
+          if (!outcome) {
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Invalid selling price — couldn't log that." } } });
+            continue;
+          }
+          const saved = await saveState(outcome.data, updatedAt);
+          if (saved.ok) {
+            data = outcome.data;
+            updatedAt = saved.updatedAt;
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { result: outcome.meta } } });
+          } else {
+            const fresh = await loadState();
+            data = fresh.data;
+            updatedAt = fresh.updatedAt;
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Save conflicted with another concurrent write — state reloaded, please retry." } } });
+          }
+        } else if (fc.name === "add_due") {
+          const outcome = computeAddDue(data, args);
+          if (!outcome) {
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Invalid party or amount — couldn't add that." } } });
             continue;
           }
           const saved = await saveState(outcome.data, updatedAt);

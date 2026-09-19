@@ -5,10 +5,13 @@ serverless functions (`api/`) that let you log expenses via Telegram,
 WhatsApp, or forwarded bank SMS, and pull holdings from a couple of Indian
 brokers.
 
-See [`MEMORY.md`](./MEMORY.md) for the business rules behind the "Smart
-Order" B2B supplier-order flow (Sourcex-style prepaid/pending-landing
-orders) — read that before touching `SmartOrderButton`, `InvestmentsTab`'s
-"mark landed" logic, or the `log_b2b_order`/`confirm_order_landed` tools.
+See [`MEMORY.md`](./MEMORY.md) for the business rules behind "James" — the
+one lightning-bolt entry point that AI-classifies a free-text line into a
+B2B supplier order, a client sale, a plain income/expense/waste, inventory
+bought to resell, a new due, or settling a due already pending — read that
+before touching `JamesButton`, `InvestmentsTab`'s "mark landed" logic, or
+any of the `log_b2b_order`/`confirm_order_landed`/`log_sale_order`/
+`settle_due` tools.
 
 ## Local development
 
