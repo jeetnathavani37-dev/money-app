@@ -369,7 +369,9 @@ export async function runMoneyAgent({ channel, chatKey, state, userMessage }) {
         systemInstruction: SYSTEM_PROMPT,
         contents,
         tools: GEMINI_TOOLS,
-        thinkingBudget: -1, // dynamic thinking — deeper reasoning for real strategic/financial advice, not just quick lookups
+        // Bounded, not dynamic (-1) — unbounded thinking risks running past this function's
+        // 60s timeout (vercel.json) and, worse, Twilio/Meta's own webhook timeouts (~15-20s).
+        thinkingBudget: 1024,
         maxOutputTokens: 4096,
       });
 

@@ -35,7 +35,10 @@ export default async function handler(req, res) {
       contents: toGeminiContents(body.messages),
       generationConfig: {
         maxOutputTokens: body.max_tokens || 4096,
-        ...(body.thinking ? { thinkingConfig: { thinkingBudget: -1 } } : {}),
+        // Bounded, not dynamic (-1) — unbounded thinking on these single-shot report/tip
+        // prompts risks running past Vercel's 60s function timeout (vercel.json), which
+        // surfaces as a stuck spinner (a 504 retried 3x) rather than a fast error.
+        ...(body.thinking ? { thinkingConfig: { thinkingBudget: 1024 } } : {}),
       },
       ...(wantsWebSearch(body.tools) ? { tools: [{ google_search: {} }] } : {}),
     };
