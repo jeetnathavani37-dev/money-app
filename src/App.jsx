@@ -1052,6 +1052,163 @@ function VoiceLogButton({ data, persist, registerActivity, setToast, triggerNote
   );
 }
 
+// The "smart order" quick-log: one free-text line about an incoming supplier order (e.g.
+// "order aya sourcex se, prepaid hai") gets AI-parsed, reviewed, then staged into
+// `investments` (status "pending_landing_prepaid"/"pending_landing_unpaid") exactly like the
+// existing Cashout flow stages inventory — "mark landed" (below, in InvestmentsTab) later
+// confirms the real reship cost and hands off to the unmodified "mark sold" flow for the
+// eventual sale, so the landed cost only ever needs updating in one place: `itemValue`.
+function SmartOrderButton({ data, persist, registerActivity, setToast, triggerNoteAnim }) {
+  const [open, setOpen] = useState(false);
+  const [typedText, setTypedText] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [form, setForm] = useState(null);
+
+  const parseWithAI = async (text) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const prompt = `Parse this business order description into JSON. Text: "${text}"\nThis app tracks small-business resale orders (e.g. from suppliers like Sourcex) that get costed, shipped, and resold.\nReturn ONLY valid JSON, no other text, in this exact shape:\n{"isB2BOrder":boolean|null,"supplier":string|null,"itemName":string|null,"prepaid":boolean|null,"costing":number|null}\nRules:\n- isB2BOrder: true if this sounds like a business/wholesale/resale order from a supplier (not a personal purchase). false otherwise. null if truly unclear.\n- supplier: the supplier/vendor name mentioned, title-cased (e.g. "Sourcex"). null if not mentioned.\n- itemName: the product/item name if mentioned. null if not mentioned.\n- prepaid: true if the text says the order is already paid for upfront (e.g. "prepaid", "PRE paid"). false if it explicitly says not paid yet / pay on delivery / COD. null if not mentioned either way.\n- costing: the cost price paid to the supplier, ONLY if an explicit number is mentioned. null otherwise — never guess a number.`;
+      const raw = await fetchAIText(prompt);
+      const match = raw.match(/\{[\s\S]*\}/);
+      const obj = JSON.parse(match ? match[0] : raw);
+      setForm({
+        supplier: obj.supplier || "", itemName: obj.itemName || "",
+        isB2B: obj.isB2BOrder ?? true, prepaid: obj.prepaid ?? true,
+        costing: obj.costing != null ? String(obj.costing) : "",
+        reshipEstimate: "", expectedSellingPrice: "", account: "none",
+      });
+    } catch (err) {
+      // Still open the review form blank — typing it in manually beats a dead end.
+      setForm({ supplier: "", itemName: "", isB2B: true, prepaid: true, costing: "", reshipEstimate: "", expectedSellingPrice: "", account: "none" });
+      setError("Couldn't parse that — fill the fields in below.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const submitTyped = () => {
+    if (!typedText.trim()) return;
+    parseWithAI(typedText.trim());
+  };
+
+  const landedCostEstimate = form ? (parseFloat(form.costing) || 0) + (parseFloat(form.reshipEstimate) || 0) : 0;
+  const potentialProfit = form ? (parseFloat(form.expectedSellingPrice) || 0) - landedCostEstimate : 0;
+
+  const saveSmartOrder = () => {
+    const costing = parseFloat(form.costing) || 0;
+    const expectedSellingPrice = parseFloat(form.expectedSellingPrice) || 0;
+    if (!costing || costing <= 0 || !expectedSellingPrice || expectedSellingPrice <= 0) return;
+    const reshipEstimate = parseFloat(form.reshipEstimate) || 0;
+    const today = todayISO();
+    const tag = form.isB2B ? `B2B ${(form.supplier || "ORDER").toUpperCase()}` : (form.supplier || "Order");
+    const itemLabel = form.itemName || tag;
+
+    const investment = {
+      id: Date.now(), name: itemLabel, amount: expectedSellingPrice, date: today,
+      itemValue: costing + reshipEstimate, expectedProfit: expectedSellingPrice - (costing + reshipEstimate),
+      itemName: form.itemName || null, qty: null,
+      source: "smart_order", supplier: form.supplier || null, isB2B: !!form.isB2B, prepaid: !!form.prepaid,
+      costing, reshipEstimate, actualReshipCost: null,
+      account: form.account !== "none" ? form.account : null,
+      investmentType: "Inventory Stock",
+      status: form.prepaid ? "pending_landing_prepaid" : "pending_landing_unpaid",
+    };
+
+    let next = { ...data, investments: [...data.investments, investment] };
+    if (form.prepaid) {
+      const fundDelta = {};
+      const fundBalances = { ...data.fundBalances };
+      data.funds.forEach((f) => {
+        const share = Math.round((costing * f.pct) / 100);
+        fundDelta[f.id] = -share;
+        fundBalances[f.id] = (fundBalances[f.id] || 0) - share;
+      });
+      const expense = { id: Date.now() + 1, amount: costing, category: "Sourcing/Business", note: `${tag} — ${itemLabel} — costing`, date: today, unnecessary: false, fine: 0, fundDelta };
+      next = { ...next, expenses: [...data.expenses, expense], fundBalances };
+      if (triggerNoteAnim) triggerNoteAnim(costing, "out");
+    }
+    if (registerActivity) next = registerActivity(next, 5);
+    persist(next);
+    if (setToast) {
+      setToast(form.prepaid ? "COSTING LOGGED · ORDER PENDING LANDING" : "ORDER LOGGED · NOTHING PAID YET");
+      setTimeout(() => setToast(null), 2000);
+    }
+    setOpen(false);
+    setTypedText("");
+    setForm(null);
+    setError(null);
+  };
+
+  return (
+    <>
+      <button style={S.smartOrderFab} onClick={() => setOpen(true)}>
+        <Zap size={20} color={T.bg} />
+      </button>
+      {open && (
+        <div style={S.calcOverlay} onClick={() => setOpen(false)}>
+          <div style={S.calcModal} onClick={(e) => e.stopPropagation()}>
+            <div style={S.calcHeader}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: T.ivory, display: "flex", alignItems: "center", gap: 6 }}><Zap size={14} /> SMART ORDER</div>
+              <button style={S.calcCloseBtn} onClick={() => setOpen(false)}><X size={16} color={T.ivory} /></button>
+            </div>
+
+            {!form && (
+              <>
+                <div style={{ fontSize: 9.5, color: T.muted, marginBottom: 6 }}>TYPE THE ORDER NATURALLY — AI FIGURES OUT THE REST</div>
+                <div style={S.formRow}>
+                  <input
+                    type="text"
+                    placeholder='e.g. "order aya sourcex se, prepaid hai"'
+                    value={typedText}
+                    onChange={(e) => setTypedText(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && submitTyped()}
+                    style={{ ...S.input, width: "100%" }}
+                  />
+                </div>
+                <button style={{ ...S.submitBtnPurple, width: "100%", marginTop: 8 }} className="npop" onClick={submitTyped} disabled={loading}>
+                  {loading ? "PARSING…" : "PARSE IT"}
+                </button>
+              </>
+            )}
+
+            {error && <div style={{ fontSize: 11, color: T.orange, marginTop: 8, fontWeight: 700 }}>{error}</div>}
+
+            {form && (
+              <div style={{ ...S.formCard, marginTop: 10 }}>
+                <div style={{ fontSize: 10, color: T.muted }}>REVIEW BEFORE SAVING</div>
+                <div style={S.formRow}>
+                  <input type="text" value={form.itemName} onChange={(e) => setForm({ ...form, itemName: e.target.value })} style={S.input} placeholder="item name" />
+                  <input type="text" value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} style={S.input} placeholder="supplier" />
+                </div>
+                <label style={S.checkboxRow}>
+                  <input type="checkbox" checked={form.prepaid} onChange={(e) => setForm({ ...form, prepaid: e.target.checked })} />
+                  PREPAID — COSTING ALREADY PAID
+                </label>
+                <div style={S.formRow}>
+                  <AmountInput placeholder="costing" value={form.costing} onChange={(v) => setForm({ ...form, costing: v })} style={S.input} className="tnum" />
+                  <AmountInput placeholder="reship cost (estimate)" value={form.reshipEstimate} onChange={(v) => setForm({ ...form, reshipEstimate: v })} style={S.input} className="tnum" />
+                </div>
+                <AmountInput placeholder="expected selling price" value={form.expectedSellingPrice} onChange={(v) => setForm({ ...form, expectedSellingPrice: v })} style={{ ...S.input, width: "100%" }} className="tnum" />
+                {(form.costing || form.expectedSellingPrice) && (
+                  <div style={{ fontSize: 11, color: potentialProfit >= 0 ? T.green : T.orange, fontWeight: 700 }} className="tnum">
+                    LANDED COST ~{fmt(landedCostEstimate)} · POTENTIAL PROFIT {fmtSigned(potentialProfit)}
+                  </div>
+                )}
+                <div style={{ fontSize: 9.5, color: T.muted }}>
+                  {form.prepaid ? "COSTING LOGS AS AN EXPENSE NOW — RESHIP LOGS WHEN IT LANDS" : "NOTHING LOGS YET — BOTH LOG WHEN IT LANDS"}
+                </div>
+                <button style={S.submitBtnGreen} className="npop" onClick={saveSmartOrder}>SAVE ORDER</button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function FloatingCalcButton({ onClick }) {
   return (
     <button style={S.fabBtn} className="npop" onClick={onClick}>
@@ -1374,6 +1531,7 @@ const emptyData = () => ({
   northStar: "",
   pinLock: { enabled: false, pin: null },
   agentMemory: {}, // per-channel (telegram/whatsapp) rolling chat memory for the money agent
+  businessMemory: "", // long-term notes the money agent accumulates across all conversations (see MEMORY.md)
 });
 
 export default function Khata() {
@@ -1434,6 +1592,7 @@ export default function Khata() {
         loaded.northStar = loaded.northStar || "";
         loaded.pinLock = loaded.pinLock || { enabled: false, pin: null };
         loaded.agentMemory = loaded.agentMemory || {};
+        loaded.businessMemory = loaded.businessMemory || "";
         loaded.funds = ensureTaxFund(loaded.funds || DEFAULT_FUNDS);
         loaded.fundBalances = { ...Object.fromEntries(loaded.funds.map((f) => [f.id, 0])), ...(loaded.fundBalances || {}) };
         dataRef.current = loaded;
@@ -1692,6 +1851,7 @@ export default function Khata() {
       <FloatingCalcButton onClick={() => setCalcOpen(true)} />
 
       <VoiceLogButton data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />
+      <SmartOrderButton data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />
       {calcOpen && (
         <CalculatorModal
           onClose={() => setCalcOpen(false)}
@@ -2287,6 +2447,8 @@ function InvestmentsTab({ data, persist, registerActivity, setToast, triggerNote
   const [form, setForm] = useState({ name: "", amount: "", type: INVESTMENT_TYPES[0] });
   const [soldFor, setSoldFor] = useState(null); // investment being marked sold
   const [soldValues, setSoldValues] = useState(null);
+  const [landingFor, setLandingFor] = useState(null); // smart-order investment being marked landed
+  const [landingValues, setLandingValues] = useState(null);
 
   const addInvestment = () => {
     const amt = parseFloat(form.amount);
@@ -2335,6 +2497,51 @@ function InvestmentsTab({ data, persist, registerActivity, setToast, triggerNote
     }
     setSoldFor(null);
     setSoldValues(null);
+  };
+
+  const startMarkLanded = (inv) => {
+    setLandingFor(inv.id);
+    setLandingValues({ actualReshipCost: String(inv.reshipEstimate ?? ""), landedDate: todayISO() });
+  };
+  // The deferred half of a smart order: whatever wasn't paid at order time gets logged now
+  // (reship only if it was prepaid; costing + reship together if it wasn't), itemValue is
+  // overwritten with the confirmed actual landed cost, and status flips to "in_stock" — from
+  // here the record is indistinguishable from a plain Cashout item, so confirmMarkSold above
+  // (already correct, reading itemValue as the cost basis) needs no changes at all.
+  const confirmMarkLanded = () => {
+    const inv = data.investments.find((i) => i.id === landingFor);
+    if (!inv) return;
+    const actualReshipCost = parseFloat(landingValues.actualReshipCost) || 0;
+    const landedDate = landingValues.landedDate || todayISO();
+    const tag = inv.isB2B ? `B2B ${(inv.supplier || "ORDER").toUpperCase()}` : (inv.supplier || "Order");
+    const itemLabel = inv.itemName || inv.name;
+
+    let fundBalances = data.fundBalances;
+    const expensesToAdd = [];
+    if (!inv.prepaid) {
+      const costingDelta = fundDeltaForAmount(data.funds, inv.costing || 0, -1);
+      fundBalances = swapFundDelta(fundBalances, {}, costingDelta);
+      expensesToAdd.push({ id: Date.now(), amount: inv.costing || 0, category: "Sourcing/Business", note: `${tag} — ${itemLabel} — costing (landed)`, date: landedDate, unnecessary: false, fine: 0, fundDelta: costingDelta });
+    }
+    const reshipDelta = fundDeltaForAmount(data.funds, actualReshipCost, -1);
+    fundBalances = swapFundDelta(fundBalances, {}, reshipDelta);
+    expensesToAdd.push({ id: Date.now() + 1, amount: actualReshipCost, category: "Shipping/Logistics", note: `${tag} — ${itemLabel} — reship (est. was ${fmt(inv.reshipEstimate || 0)})`, date: landedDate, unnecessary: false, fine: 0, fundDelta: reshipDelta });
+
+    const actualLandedCost = (inv.costing || 0) + actualReshipCost;
+    const investments = data.investments.map((i) => (i.id === inv.id
+      ? { ...i, status: "in_stock", itemValue: actualLandedCost, actualReshipCost, landedDate, expectedProfit: i.amount - actualLandedCost }
+      : i));
+
+    let next = { ...data, investments, expenses: [...data.expenses, ...expensesToAdd], fundBalances };
+    if (registerActivity) next = registerActivity(next, 3);
+    persist(next);
+    if (triggerNoteAnim) triggerNoteAnim(expensesToAdd.reduce((s, e) => s + e.amount, 0), "out");
+    if (setToast) {
+      setToast(`LANDED · ACTUAL COST ${fmt(actualLandedCost)} · PROJECTED ${fmtSigned(inv.amount - actualLandedCost)}`);
+      setTimeout(() => setToast(null), 2200);
+    }
+    setLandingFor(null);
+    setLandingValues(null);
   };
 
   const inventoryStats = useMemo(() => {
@@ -2416,6 +2623,8 @@ function InvestmentsTab({ data, persist, registerActivity, setToast, triggerNote
                 {[...byType[t].items].reverse().map((i) => {
                   const isInventory = i.investmentType === "Inventory Stock";
                   const isSold = i.status === "sold";
+                  const isPendingLanding = i.status === "pending_landing_prepaid" || i.status === "pending_landing_unpaid";
+                  const isLanded = i.source === "smart_order" && !!i.landedDate && !isSold;
                   const isDead = inventoryStats.deadStockIds.has(i.id);
                   const marginPct = i.expectedProfit && i.amount > 0 ? Math.round((i.expectedProfit / i.amount) * 1000) / 10 : null;
                   const realizedMargin = isSold ? i.soldPrice - (i.itemValue || 0) : null;
@@ -2425,6 +2634,9 @@ function InvestmentsTab({ data, persist, registerActivity, setToast, triggerNote
                       <div style={S.ledgerMain}>
                         <div style={S.ledgerCategory}>
                           {i.name} {i.source === "inventory_cashout" && <span style={S.fineTag}>CASHOUT</span>}
+                          {i.isB2B && <span style={{ ...S.fineTag, color: T.gold, borderColor: T.gold }}>{`B2B ${(i.supplier || "ORDER").toUpperCase()}`}</span>}
+                          {i.status === "pending_landing_prepaid" && <span style={{ ...S.fineTag, color: T.blue, borderColor: T.blue }}>PREPAID · IN TRANSIT</span>}
+                          {i.status === "pending_landing_unpaid" && <span style={{ ...S.fineTag, color: T.orange, borderColor: T.orange }}>UNPAID · IN TRANSIT</span>}
                           {isSold && <span style={{ ...S.fineTag, color: T.green, borderColor: T.green }}>SOLD</span>}
                           {isDead && <span style={{ ...S.fineTag, color: T.orange, borderColor: T.orange }}>DEAD STOCK</span>}
                         </div>
@@ -2433,12 +2645,19 @@ function InvestmentsTab({ data, persist, registerActivity, setToast, triggerNote
                           {i.expectedArrival && !isSold && ` · arrives ${fmtDate(i.expectedArrival)}`}
                           {isSold
                             ? ` · sold ${fmtDateShort(i.soldDate)} in ${daysBetweenDates(i.date, i.soldDate)}d · realized ${fmtSigned(realizedMargin)}${realizedPct !== null ? ` (${realizedPct}%)` : ""}`
+                            : isPendingLanding
+                            ? ` · ~${fmt(i.expectedProfit)} potential profit (est. landed cost ${fmt(i.itemValue)})`
+                            : isLanded
+                            ? ` · landed ${fmtDateShort(i.landedDate)} · ${fmt(i.expectedProfit)} profit if sold at ${fmt(i.amount)} (actual landed cost ${fmt(i.itemValue)})`
                             : i.expectedProfit ? ` · ~${fmt(i.expectedProfit)} expected profit${marginPct !== null ? ` (${marginPct}%)` : ""}` : ""}
                         </div>
                       </div>
                       <div style={{ ...S.ledgerAmt, color: T.purple }} className="tnum">{fmt(i.amount)}</div>
-                      {isInventory && !isSold && (
+                      {isInventory && !isSold && !isPendingLanding && (
                         <button style={S.editBtn} onClick={() => startMarkSold(i)} title="mark sold"><Check size={13} color={T.green} /></button>
+                      )}
+                      {isPendingLanding && (
+                        <button style={S.editBtn} onClick={() => startMarkLanded(i)} title="mark landed"><PackageCheck size={13} color={T.blue} /></button>
                       )}
                       <button style={S.deleteBtn} onClick={() => removeInvestment(i.id)}><Trash2 size={13} color={T.muted} /></button>
                     </div>
@@ -2460,6 +2679,20 @@ function InvestmentsTab({ data, persist, registerActivity, setToast, triggerNote
           fields={[
             { key: "soldPrice", type: "amount", label: "actual sold price" },
             { key: "soldDate", type: "date", label: "sold date" },
+          ]}
+        />
+      )}
+
+      {landingFor && landingValues && (
+        <EditEntryModal
+          title="MARK ORDER LANDED"
+          values={landingValues}
+          onChange={(key, val) => setLandingValues({ ...landingValues, [key]: val })}
+          onSave={confirmMarkLanded}
+          onCancel={() => { setLandingFor(null); setLandingValues(null); }}
+          fields={[
+            { key: "actualReshipCost", type: "amount", label: "actual reship cost paid" },
+            { key: "landedDate", type: "date", label: "landed date" },
           ]}
         />
       )}
@@ -7076,6 +7309,12 @@ const S = {
   voiceFab: {
     position: "fixed", right: 16, bottom: 158, width: 56, height: 56,
     background: T.purple, border: "none", borderRadius: "50%", boxShadow: glow(T.purple, 0.4),
+    display: "flex", alignItems: "center", justifyContent: "center", zIndex: 150,
+    transition: "transform 0.15s ease",
+  },
+  smartOrderFab: {
+    position: "fixed", right: 16, bottom: 224, width: 56, height: 56,
+    background: T.gold, border: "none", borderRadius: "50%", boxShadow: glow(T.gold, 0.4),
     display: "flex", alignItems: "center", justifyContent: "center", zIndex: 150,
     transition: "transform 0.15s ease",
   },

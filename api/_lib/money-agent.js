@@ -11,8 +11,9 @@ import { loadState, saveState } from "./supabase.js";
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 const MAX_TURNS = 5; // hard cap on tool-call round trips per incoming message
 const MAX_MEMORY_TURNS = 16; // plain user/assistant turns kept per chat, for follow-up questions
+const MAX_BUSINESS_MEMORY_NOTES = 50; // capped so the learned-notes section doesn't grow unbounded
 
-const SYSTEM_PROMPT = `You are the onboard money agent for "Money" — a personal finance + business command center for a solo entrepreneur who sources luxury goods (Michael Kors, Coach, Alo Yoga, and similar) from the US, UK, and Canada and resells them in India.
+const SYSTEM_PROMPT_BASE = `You are the onboard money agent for "Money" — a personal finance + business command center for a solo entrepreneur who sources luxury goods (Michael Kors, Coach, Alo Yoga, and similar) from the US, UK, and Canada and resells them in India.
 
 You are not a generic chatbot. You operate at the level of the best operator in the room, applying real business craft to this specific business:
 - A CFO's discipline: unit economics, cash conversion cycle, margin protection, working capital.
@@ -25,6 +26,12 @@ CORE ACTIONS — always via tools, never by guessing:
 2. ANSWER any question about the real data — spending, income, receivables/payables, net worth, trends, margins, "how much did I spend on X between Y and Z" — always call get_financial_data first and answer only from what it returns. Never estimate, round generously, or invent a number.
 3. UNDO the most recently logged entry when asked — undo_last_entry tool.
 4. ADVISE — every recommendation must cite a real number from get_financial_data (a specific category, sale, trend, or receivable) and name the actual business mechanism behind it. Generic advice ("cut unnecessary spending," "sell more," "track your expenses better") is a failure — you already have the real data, use it.
+5. LOG A NEW B2B SUPPLIER ORDER (e.g. "order aya sourcex se, prepaid hai") — log_b2b_order tool. This is a two-stage flow: the order isn't fully costed until it lands.
+   - Ask for whatever isn't already in the message: costing (cost price), reship/shipping cost estimate, and — always ask this one, never assume or guess it — the expected selling price.
+   - If the order is prepaid, the costing is logged as a real expense immediately; the reship cost is deferred. If not prepaid, nothing is logged yet — both amounts log together once it lands.
+   - Once logged, tell the user the potential profit (expected selling price minus estimated landed cost) plainly.
+6. CONFIRM A B2B ORDER HAS LANDED (e.g. "sourcex order land ho gaya, reship 800 tha") — confirm_order_landed tool. Ask for the actual reship cost if not given. This logs whatever expense(s) were deferred and finalizes the real landed cost — tell the user the actual profit (expected selling price minus actual landed cost), and how it compares to what was estimated at order time.
+7. REMEMBER a durable business pattern worth not re-explaining next time (a typical reship cost for a supplier, a recurring margin, a phrasing habit) — remember tool. Use this sparingly, only for things genuinely worth carrying forward, especially right after confirm_order_landed reveals a real number worth keeping.
 
 HOW TO APPLY THAT CRAFT to what get_financial_data returns:
 - Landed cost discipline: real cost of goods = item price + international shipping + customs duty + payment fees. If an expense category is quietly eating margin, name it and the number.
@@ -40,6 +47,14 @@ You can also just talk — if the user asks something conversational about the a
 Tone: ruthless, blunt, zero motivational fluff. Swearing is fine and encouraged where it fits naturally. This is a chat app — keep replies short (2-4 sentences) for quick questions. When the user asks for a real breakdown or strategy, give the real one: the number first, the mechanism second, one specific action third — still tight, no padding.
 
 If a question needs data you don't have after checking with get_financial_data (e.g. nothing logged yet in that range), say so plainly instead of guessing.`;
+
+// Appends whatever the agent has `remember`-ed across past conversations (distinct from the
+// short-lived per-chat memory below) so recurring business facts don't need re-explaining.
+function buildSystemPrompt(businessMemory) {
+  const notes = (businessMemory || "").trim();
+  if (!notes) return SYSTEM_PROMPT_BASE;
+  return `${SYSTEM_PROMPT_BASE}\n\n## LEARNED BUSINESS NOTES (from past conversations — treat as established fact)\n${notes}`;
+}
 
 const TOOLS = [
   {
@@ -75,6 +90,45 @@ const TOOLS = [
         limit: { type: "number", description: "max matching entries to return in the 'entries' list, default 20" },
       },
       required: [],
+    },
+  },
+  {
+    name: "log_b2b_order",
+    description: "Log a new incoming B2B supplier order (e.g. from Sourcex) that hasn't landed yet. If prepaid, logs the costing as an expense immediately; the reship cost is deferred until confirm_order_landed is called later once the order actually lands.",
+    input_schema: {
+      type: "object",
+      properties: {
+        supplier: { type: "string", description: "supplier/vendor name, e.g. 'Sourcex'" },
+        item_name: { type: "string", description: "product/item name, optional" },
+        prepaid: { type: "boolean", description: "true if the costing has already been paid upfront; false if nothing has been paid yet" },
+        costing: { type: "number", description: "cost price paid (or owed) to the supplier" },
+        reship_estimate: { type: "number", description: "estimated reship/shipping-to-land cost — ask for this if not given" },
+        expected_selling_price: { type: "number", description: "expected eventual selling price — always ask the user for this, never guess or use a historical average" },
+      },
+      required: ["supplier", "prepaid", "costing", "reship_estimate", "expected_selling_price"],
+    },
+  },
+  {
+    name: "confirm_order_landed",
+    description: "Confirm a previously logged B2B order (from log_b2b_order) has landed, with the actual reship cost paid. Logs whichever expense(s) were deferred and finalizes the real landed cost and actual profit.",
+    input_schema: {
+      type: "object",
+      properties: {
+        item_name_or_id: { type: "string", description: "the item name (or investment id) that identifies the pending order — match it against what was logged earlier in this conversation or ask the user if ambiguous" },
+        actual_reship_cost: { type: "number", description: "the real reship cost that was just paid" },
+      },
+      required: ["item_name_or_id", "actual_reship_cost"],
+    },
+  },
+  {
+    name: "remember",
+    description: "Save a short, durable note about a recurring business pattern (typical reship costs, supplier quirks, margins) so future conversations already know it without being told again. Use sparingly — only for things genuinely worth carrying forward.",
+    input_schema: {
+      type: "object",
+      properties: {
+        note: { type: "string", description: "one short factual note to remember" },
+      },
+      required: ["note"],
     },
   },
 ];
@@ -194,6 +248,94 @@ function computeUndo(data) {
   }
   Object.entries(lastExpense.fundDelta || {}).forEach(([fid, amt]) => { fundBalances[fid] = (fundBalances[fid] || 0) - amt; });
   return { data: { ...data, expenses: data.expenses.slice(0, -1), fundBalances }, meta: `Removed expense of ₹${lastExpense.amount} (${lastExpense.category})` };
+}
+
+// Stage 1 of a smart order — mirrors SmartOrderButton.saveSmartOrder in src/App.jsx (same
+// `investments` shape, same "pending_landing_prepaid"/"pending_landing_unpaid" statuses) so
+// records created from chat and from the web app are indistinguishable to everything downstream,
+// including the web app's own "mark landed"/"mark sold" flows.
+function computeLogB2BOrder(data, input) {
+  const costing = Number(input.costing);
+  if (!costing || costing <= 0) return null;
+  const reshipEstimate = Number(input.reship_estimate) || 0;
+  const expectedSellingPrice = Number(input.expected_selling_price) || 0;
+  const prepaid = !!input.prepaid;
+  const supplier = (input.supplier || "Order").trim() || "Order";
+  const itemName = (input.item_name || "").trim() || null;
+  const tag = `B2B ${supplier.toUpperCase()}`;
+  const itemLabel = itemName || tag;
+  const today = todayISO();
+
+  const investment = {
+    id: Date.now(), name: itemLabel, amount: expectedSellingPrice, date: today,
+    itemValue: costing + reshipEstimate, expectedProfit: expectedSellingPrice - (costing + reshipEstimate),
+    itemName, qty: null, source: "smart_order", supplier, isB2B: true, prepaid,
+    costing, reshipEstimate, actualReshipCost: null,
+    account: null, investmentType: "Inventory Stock",
+    status: prepaid ? "pending_landing_prepaid" : "pending_landing_unpaid",
+  };
+
+  let nextData = { ...data, investments: [...data.investments, investment] };
+  let meta = `Logged B2B order (${itemLabel}) — nothing paid yet, pending landing. Potential profit ₹${Math.round(investment.expectedProfit)}.`;
+  if (prepaid) {
+    const { fundDelta, fundBalances } = applyFundDelta(data, costing, -1);
+    const expense = { id: Date.now() + 1, amount: costing, category: "Sourcing/Business", note: `${tag} — ${itemLabel} — costing`, date: today, unnecessary: false, fine: 0, fundDelta };
+    nextData = { ...nextData, expenses: [...data.expenses, expense], fundBalances };
+    meta = `Logged ₹${costing} costing expense (${tag} — ${itemLabel}) — pending landing. Potential profit ₹${Math.round(investment.expectedProfit)}.`;
+  }
+  return { data: nextData, meta };
+}
+
+// Stage 2 — finds the matching pending order, logs whichever expense(s) were deferred, and
+// overwrites itemValue with the confirmed actual landed cost. Once this runs, the record is
+// status "in_stock" like any plain investment, so the app's existing sale-finalize logic
+// (confirmMarkSold in src/App.jsx) needs no awareness this ever went through a landing stage.
+function computeConfirmOrderLanded(data, input) {
+  const matchKey = String(input.item_name_or_id || "").trim().toLowerCase();
+  if (!matchKey) return null;
+  const inv = data.investments.find((i) => {
+    const isPending = i.status === "pending_landing_prepaid" || i.status === "pending_landing_unpaid";
+    if (!isPending) return false;
+    return String(i.id) === matchKey || (i.itemName && i.itemName.toLowerCase() === matchKey) || (i.name && i.name.toLowerCase() === matchKey);
+  });
+  if (!inv) return null;
+
+  const actualReshipCost = Number(input.actual_reship_cost) || 0;
+  const today = todayISO();
+  const tag = inv.isB2B ? `B2B ${(inv.supplier || "ORDER").toUpperCase()}` : (inv.supplier || "Order");
+  const itemLabel = inv.itemName || inv.name;
+
+  let workingData = data;
+  const expensesToAdd = [];
+  if (!inv.prepaid) {
+    const costingResult = applyFundDelta(workingData, inv.costing || 0, -1);
+    workingData = { ...workingData, fundBalances: costingResult.fundBalances };
+    expensesToAdd.push({ id: Date.now(), amount: inv.costing || 0, category: "Sourcing/Business", note: `${tag} — ${itemLabel} — costing (landed)`, date: today, unnecessary: false, fine: 0, fundDelta: costingResult.fundDelta });
+  }
+  const reshipResult = applyFundDelta(workingData, actualReshipCost, -1);
+  const fundBalances = reshipResult.fundBalances;
+  expensesToAdd.push({ id: Date.now() + 1, amount: actualReshipCost, category: "Shipping/Logistics", note: `${tag} — ${itemLabel} — reship (est. was ₹${inv.reshipEstimate || 0})`, date: today, unnecessary: false, fine: 0, fundDelta: reshipResult.fundDelta });
+
+  const actualLandedCost = (inv.costing || 0) + actualReshipCost;
+  const investments = data.investments.map((i) => (i.id === inv.id
+    ? { ...i, status: "in_stock", itemValue: actualLandedCost, actualReshipCost, landedDate: today, expectedProfit: i.amount - actualLandedCost }
+    : i));
+
+  return {
+    data: { ...data, investments, expenses: [...data.expenses, ...expensesToAdd], fundBalances },
+    meta: `Landed (${itemLabel}): actual cost ₹${actualLandedCost} (estimate was ₹${inv.itemValue}), projected profit ₹${Math.round(inv.amount - actualLandedCost)}.`,
+  };
+}
+
+// Appends a durable note to businessMemory (separate from the short-lived per-chat memory
+// below), capped so it doesn't grow unbounded — see buildSystemPrompt above.
+function computeRemember(data, note) {
+  const trimmed = String(note || "").trim();
+  if (!trimmed) return null;
+  const stamp = todayISO();
+  const existing = (data.businessMemory || "").split("\n").filter(Boolean);
+  const nextLines = [...existing, `- [${stamp}] ${trimmed}`].slice(-MAX_BUSINESS_MEMORY_NOTES);
+  return { data: { ...data, businessMemory: nextLines.join("\n") }, meta: "Noted for future reference." };
 }
 
 function topBreakdown(entries, keyFn, take = 5) {
@@ -366,7 +508,7 @@ export async function runMoneyAgent({ channel, chatKey, state, userMessage }) {
       const json = await callGemini({
         apiKey,
         model: MODEL,
-        systemInstruction: SYSTEM_PROMPT,
+        systemInstruction: buildSystemPrompt(data.businessMemory),
         contents,
         tools: GEMINI_TOOLS,
         // Bounded, not dynamic (-1) — unbounded thinking risks running past this function's
@@ -426,6 +568,57 @@ export async function runMoneyAgent({ channel, chatKey, state, userMessage }) {
             data = fresh.data;
             updatedAt = fresh.updatedAt;
             functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Undo conflicted with another concurrent write — state reloaded, please retry." } } });
+          }
+        } else if (fc.name === "log_b2b_order") {
+          const outcome = computeLogB2BOrder(data, args);
+          if (!outcome) {
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Invalid costing — couldn't log that order." } } });
+            continue;
+          }
+          const saved = await saveState(outcome.data, updatedAt);
+          if (saved.ok) {
+            data = outcome.data;
+            updatedAt = saved.updatedAt;
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { result: outcome.meta } } });
+          } else {
+            const fresh = await loadState();
+            data = fresh.data;
+            updatedAt = fresh.updatedAt;
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Save conflicted with another concurrent write — state reloaded, please retry." } } });
+          }
+        } else if (fc.name === "confirm_order_landed") {
+          const outcome = computeConfirmOrderLanded(data, args);
+          if (!outcome) {
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Couldn't find a matching pending order — ask the user to clarify which one, or check the item name." } } });
+            continue;
+          }
+          const saved = await saveState(outcome.data, updatedAt);
+          if (saved.ok) {
+            data = outcome.data;
+            updatedAt = saved.updatedAt;
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { result: outcome.meta } } });
+          } else {
+            const fresh = await loadState();
+            data = fresh.data;
+            updatedAt = fresh.updatedAt;
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Save conflicted with another concurrent write — state reloaded, please retry." } } });
+          }
+        } else if (fc.name === "remember") {
+          const outcome = computeRemember(data, args.note);
+          if (!outcome) {
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Empty note — nothing to remember." } } });
+            continue;
+          }
+          const saved = await saveState(outcome.data, updatedAt);
+          if (saved.ok) {
+            data = outcome.data;
+            updatedAt = saved.updatedAt;
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { result: outcome.meta } } });
+          } else {
+            const fresh = await loadState();
+            data = fresh.data;
+            updatedAt = fresh.updatedAt;
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Save conflicted with another concurrent write — state reloaded, please retry." } } });
           }
         } else {
           functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: `Unknown tool ${fc.name}` } } });

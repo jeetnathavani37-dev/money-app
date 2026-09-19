@@ -5,6 +5,11 @@ serverless functions (`api/`) that let you log expenses via Telegram,
 WhatsApp, or forwarded bank SMS, and pull holdings from a couple of Indian
 brokers.
 
+See [`MEMORY.md`](./MEMORY.md) for the business rules behind the "Smart
+Order" B2B supplier-order flow (Sourcex-style prepaid/pending-landing
+orders) — read that before touching `SmartOrderButton`, `InvestmentsTab`'s
+"mark landed" logic, or the `log_b2b_order`/`confirm_order_landed` tools.
+
 ## Local development
 
 ```bash
@@ -37,11 +42,16 @@ Vercel project's environment variables for deployment:
 - **`api/_lib/money-agent.js`** — the shared "money agent" both bots run on: a
   specialized financial-controller persona for this specific D2C
   sourcing/resale business, backed by real tool use (`log_entry`,
-  `undo_last_entry`, `get_financial_data`) instead of asking the model to emit a
-  specific text format. `get_financial_data` lets it answer *any* question
-  about the real ledger (arbitrary date ranges, categories, keywords) rather
-  than being limited to fixed today/week/month snapshots, and each chat keeps
-  a short rolling memory so follow-up questions work. Runs on Gemini (function calling), free tier.
+  `undo_last_entry`, `get_financial_data`, `log_b2b_order`,
+  `confirm_order_landed`, `remember` — see [`MEMORY.md`](./MEMORY.md) for the
+  B2B order flow) instead of asking the model to emit a specific text format.
+  `get_financial_data` lets it answer *any* question about the real ledger
+  (arbitrary date ranges, categories, keywords) rather than being limited to
+  fixed today/week/month snapshots. Each chat keeps a short rolling memory so
+  follow-up questions work, and `remember` adds to a separate long-term
+  `businessMemory` note shared across *all* conversations (web app included,
+  since it's just a field on the same synced state). Runs on Gemini (function
+  calling), free tier.
 - **`api/telegram-webhook.js`** — Telegram bot on the money agent: log
   entries, ask anything about your real data, undo the last entry, get
   tactical advice — all in one open-ended chat.
