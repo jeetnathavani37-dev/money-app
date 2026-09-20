@@ -20,6 +20,28 @@ The common thread across the staged ones (`b2b_order`, `sale_order`'s due amount
 finally confirmed. `quick_entry` and `cashout` have no staging; they're one-shot, matching the
 manual forms they mirror.
 
+## The conversation engine (web app)
+
+`JamesButton` is a real back-and-forth, not a form. Turn 1 classifies intent only
+(`startConversation`). Every turn after that — `advanceConversation` — sends Gemini the
+**entire conversation so far** plus `JAMES_FIELD_FLOWS[intent]` (the field list + one-line
+descriptions) and gets back `{ fields, nextQuestion, readyToSave }` in one call: the model
+decides what's still missing and phrases the next question itself, matching the user's own
+tone — there's no scripted question order or hand-rolled reply parsing. Once `readyToSave` is
+true, the matching `doSave*` function (mirroring the manual flow it replaces) runs immediately
+and posts its result back into the thread as James's final message. A failed save (e.g.
+`settle_due` finding no matching pending entry) posts the reason and leaves the conversation
+open rather than closing it, so the user can correct something and let the next reply retrigger
+a save attempt.
+
+Don't reintroduce a static review form here — that was the previous iteration and is exactly
+what this conversational rebuild replaced, per explicit user feedback ("AI questions puche
+mujhse" — the AI should ask *me* questions).
+
+The bots (`api/_lib/money-agent.js`) never needed this change: Telegram/WhatsApp are already
+real chat surfaces, and the system prompt already tells the agent to ask for whatever's
+missing in plain text before calling a tool.
+
 ## The problem this solves
 
 A B2B supplier order (e.g. "order aya sourcex se, prepaid hai") isn't fully costed the moment
