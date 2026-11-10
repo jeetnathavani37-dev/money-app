@@ -1245,45 +1245,29 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
     const amt = parseFloat(f.amount) || 0;
     if (!q || !amt || amt <= 0) return { ok: false, message: "Party ka naam aur amount dono chahiye." };
     const matches = (party) => !!party && (party.toLowerCase().includes(q) || q.includes(party.toLowerCase()));
-    const recv = data.receivables.filter((r) => r.status === "pending" && matches(r.party)).map((entry) => ({ kind: "receivable", entry }));
-    const pay = data.payables.filter((p) => p.status === "pending" && matches(p.party)).map((entry) => ({ kind: "payable", entry }));
-    const candidates = [...recv, ...pay];
-    if (candidates.length === 0) return { ok: false, message: `"${f.party}" ke against koi pending due nahi mila.` };
-    const { kind, entry } = candidates[0];
+    const byAge = (x, y) => (x.dueDate || "9999").localeCompare(y.dueDate || "9999") || x.id - y.id;
+    const recv = data.receivables.filter((r) => r.status === "pending" && matches(r.party)).sort(byAge);
+    const pay = data.payables.filter((p) => p.status === "pending" && matches(p.party)).sort(byAge);
+    if (recv.length === 0 && pay.length === 0) return { ok: false, message: `"${f.party}" ke against koi pending due nahi mila.` };
+    if (recv.length > 0 && pay.length > 0) return { ok: false, message: `"${f.party}" ke saath lena aur dena dono pending hain — paisa aaya ya diya, ye saaf batao.` };
+    // same engine as the Dues tab: each entry settles on its own, oldest first, with its own log
+    const kind = recv.length > 0 ? "receivable" : "payable";
+    const entries = kind === "receivable" ? recv : pay;
     const today = todayISO();
-    const remaining = Math.max(0, (entry.amount || 0) - amt);
-    const doneStatus = kind === "receivable" ? "received" : "paid";
-    const listKey = kind === "receivable" ? "receivables" : "payables";
-    const updatedList = data[listKey].map((e) => (e.id === entry.id ? { ...e, amount: remaining, status: remaining <= 0 ? doneStatus : "pending" } : e));
-
-    let next = { ...data, [listKey]: updatedList };
-    const fundDelta = {};
-    const fundBalances = { ...next.fundBalances };
-    const sign = kind === "receivable" ? 1 : -1;
-    data.funds.forEach((fd) => {
-      const share = Math.round((amt * fd.pct) / 100) * sign;
-      fundDelta[fd.id] = share;
-      fundBalances[fd.id] = (fundBalances[fd.id] || 0) + share;
-    });
-
-    if (kind === "receivable") {
-      if (!entry.fromSoldOrder) {
-        const income = { id: Date.now(), amount: amt, source: entry.party, note: `${entry.party} — settlement`, date: today, fundDelta };
-        next = { ...next, income: [...next.income, income], fundBalances };
-      }
-      next = withAccountMovement(next, "none", "in", amt, `${entry.party} — settlement`, today);
-      if (triggerNoteAnim) triggerNoteAnim(amt, "in");
-    } else {
-      const expense = { id: Date.now(), amount: amt, category: "Sourcing/Business", note: `${entry.party} — settlement`, date: today, unnecessary: false, fine: 0, fundDelta };
-      next = { ...next, expenses: [...next.expenses, expense], fundBalances };
-      next = withAccountMovement(next, "none", "out", amt, `${entry.party} — settlement`, today);
-      if (triggerNoteAnim) triggerNoteAnim(amt, "out");
+    let left = amt, next = data, closed = 0;
+    for (const e of entries) {
+      if (left <= 0) break;
+      const part = Math.min(left, e.amount);
+      next = applyDueSettlement(next, kind, e.id, part, today, "none");
+      left -= part;
+      if (part >= e.amount) closed += 1;
     }
+    const applied = amt - left;
+    const stillOpen = entries.reduce((a, e) => a + e.amount, 0) - applied;
     if (registerActivity) next = registerActivity(next, 3);
     jPersist(next);
-    return { ok: true, message: remaining <= 0
-      ? `Settled — ${kind} with ${entry.party} closed.`
-      : `Partial settlement — ₹${remaining} abhi bhi ${kind === "receivable" ? "due hai unse" : "owe karte ho unhe"}.` };
+    if (triggerNoteAnim) triggerNoteAnim(applied, kind === "receivable" ? "in" : "out");
+    return { ok: true, message: `${entries[0].party}: ${fmt(applied)} settle hua${closed ? ` (${closed} entry band)` : ""}. ${stillOpen > 0 ? `${fmt(stillOpen)} abhi ${kind === "receivable" ? "lena baaki hai" : "dena baaki hai"}.` : "Sab settle."}${left > 0 ? ` ${fmt(left)} extra tha — wo kisi due me nahi laga.` : ""}` };
   };
 
   const doSaveQuickEntry = (f) => {
@@ -5028,6 +5012,117 @@ function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAni
   );
 }
 
+/* ---------------- Per-entry settlement (shared by Dues, Sales and James) ---------------- */
+
+// ids for rows created in the same tick (e.g. one payment split across several entries) must not collide
+let _idSeq = 0;
+const nextId = () => { _idSeq = (_idSeq + 2) % 1000; return Date.now() + _idSeq; };
+
+const dueSettled = (e) => (e.payments || []).reduce((a, p) => a + (p.amount || 0), 0);
+// what the entry was for originally — `amount` on a due is always what is still outstanding
+const dueOriginal = (e) => (e.total != null ? e.total : (e.amount || 0) + dueSettled(e));
+const DUE_KEYS = { receivable: { list: "receivables", done: "received", dir: "in", sign: 1 }, payable: { list: "payables", done: "paid", dir: "out", sign: -1 } };
+
+// Settles (fully or partly) ONE due entry. The money becomes a real ledger row linked by dueId — income for a
+// receivable (skipped for the old "sold order" receivables, whose profit was already booked), expense for a
+// payable — and the entry keeps a payment log, so every entry shows how much is settled and how much is left.
+function applyDueSettlement(data, kind, entryId, amt, date, account) {
+  const K = DUE_KEYS[kind];
+  const entry = (data[K.list] || []).find((e) => e.id === entryId);
+  if (!entry || !amt || amt <= 0 || entry.status !== "pending") return data;
+  const pay = Math.min(amt, entry.amount || 0);
+  if (pay <= 0) return data;
+  const scope = entry.purpose === "business" ? "business" : "personal";
+  const note = `${entry.party} — settlement${entry.note ? ` (${entry.note})` : ""}`;
+  let next = data, ledgerId = null, ledgerKind = null;
+  if (!(kind === "receivable" && entry.fromSoldOrder)) {
+    const fundDelta = fundDeltaForAmount(data.funds, pay, K.sign);
+    const fundBalances = swapFundDelta(data.fundBalances, null, fundDelta);
+    ledgerId = nextId();
+    if (kind === "receivable") {
+      ledgerKind = "income";
+      next = { ...next, fundBalances, income: [...next.income, { id: ledgerId, amount: pay, source: entry.party, note, date, fundDelta, scope, dueId: entry.id }] };
+    } else {
+      ledgerKind = "expense";
+      next = { ...next, fundBalances, expenses: [...next.expenses, { id: ledgerId, amount: pay, category: scope === "business" ? "Sourcing/Business" : "Other", note, date, unnecessary: false, fine: 0, fundDelta, scope, dueId: entry.id }] };
+    }
+  }
+  const payment = { id: nextId(), date, amount: pay, ledgerId, ledgerKind };
+  const remaining = (entry.amount || 0) - pay;
+  next = { ...next, [K.list]: next[K.list].map((e) => (e.id !== entryId ? e : { ...e, total: dueOriginal(e), amount: remaining, status: remaining <= 0 ? K.done : "pending", payments: [...(e.payments || []), payment] })) };
+  return withAccountMovement(next, account, K.dir, pay, note, date);
+}
+// Undo one settlement: the amount goes back on the entry and its ledger row (and fund split) is removed.
+function removeDuePayment(data, kind, entryId, paymentId) {
+  const K = DUE_KEYS[kind];
+  const entry = (data[K.list] || []).find((e) => e.id === entryId);
+  const p = entry && (entry.payments || []).find((x) => x.id === paymentId);
+  if (!p) return data;
+  let next = data;
+  if (p.ledgerId) {
+    const lk = p.ledgerKind === "expense" ? "expenses" : "income";
+    const row = data[lk].find((e) => e.id === p.ledgerId);
+    if (row) next = { ...next, fundBalances: swapFundDelta(data.fundBalances, row.fundDelta, null), [lk]: data[lk].filter((e) => e.id !== row.id) };
+  }
+  return { ...next, [K.list]: next[K.list].map((e) => (e.id !== entryId ? e : { ...e, amount: (e.amount || 0) + p.amount, status: "pending", payments: e.payments.filter((x) => x.id !== paymentId) })) };
+}
+
+// Split one amount across several open entries: type the total and it fills oldest-first, or edit any row by hand.
+function AllocEditor({ title, rows, accent, onSave, onCancel, verb }) {
+  const [amounts, setAmounts] = useState({});
+  const [total, setTotal] = useState("");
+  const [account, setAccount] = useState("none");
+  const sum = rows.reduce((a, r) => a + (parseFloat(amounts[r.id]) || 0), 0);
+  const over = rows.some((r) => (parseFloat(amounts[r.id]) || 0) > r.balance);
+  const spread = (v) => {
+    setTotal(v);
+    let left = parseFloat(v) || 0;
+    const next = {};
+    rows.forEach((r) => { const take = Math.min(left, r.balance); next[r.id] = take > 0 ? String(take) : ""; left -= take; });
+    setAmounts(next);
+  };
+  const totalDue = rows.reduce((a, r) => a + r.balance, 0);
+  return (
+    <div style={S.calcOverlay} onClick={onCancel}>
+      <div style={{ ...S.calcModal, maxHeight: "86vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+        <div style={S.calcHeader}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: T.ivory }}>{title}</div>
+          <button style={S.calcCloseBtn} onClick={onCancel}><X size={16} color={T.ivory} /></button>
+        </div>
+        <div style={{ fontSize: 10, color: T.muted, fontWeight: 700, marginBottom: 6 }}>TOTAL {verb} — PURANI ENTRY PEHLE BHARTI HAI, YA NEECHE HAR ENTRY ME KHUD LIKHO</div>
+        <div style={S.formRow}>
+          <AmountInput autoFocus placeholder="total amount" value={total} onChange={spread} style={{ ...S.input, fontSize: 18, fontWeight: 700 }} className="tnum" />
+          <button style={{ ...S.correctionLink, flexShrink: 0 }} onClick={() => spread(String(totalDue))}>SAB · {fmt(totalDue)}</button>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
+          {rows.map((r) => {
+            const v = parseFloat(amounts[r.id]) || 0;
+            return (
+              <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.label}</div>
+                  <div style={{ fontSize: 10, color: v > r.balance ? T.orange : T.muted, fontWeight: 700 }} className="tnum">{r.sub} · baaki {fmt(r.balance)}{v > 0 && v <= r.balance ? ` → ${fmt(r.balance - v)}` : ""}</div>
+                </div>
+                <AmountInput placeholder="0" value={amounts[r.id] || ""} onChange={(x) => { setAmounts({ ...amounts, [r.id]: x }); setTotal(""); }} style={{ ...S.input, flex: "0 0 104px", textAlign: "right", borderColor: v > r.balance ? T.orange : undefined }} className="tnum" />
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", gap: 7, alignItems: "center", marginTop: 12 }}>
+          <span style={{ fontSize: 10, color: T.muted, fontWeight: 700 }}>ACCOUNT</span>
+          {["none", "cash", "bank"].map((a) => (
+            <button key={a} onClick={() => setAccount(a)} style={{ background: account === a ? T.surface : "none", color: account === a ? T.ivory : T.muted, border: `1px solid ${account === a ? T.lineStrong : T.line}`, borderRadius: T.radiusPill, padding: "5px 11px", fontSize: 10.5, fontWeight: 700 }}>{a === "none" ? "—" : a.toUpperCase()}</button>
+          ))}
+        </div>
+        {over && <div style={{ fontSize: 10.5, color: T.orange, fontWeight: 700, marginTop: 8 }}>Kisi entry me baaki se zyada likha hai.</div>}
+        <button style={{ ...S.submitBtnGreen, width: "100%", marginTop: 12, background: accent, boxShadow: glow(accent, 0.3), opacity: sum > 0 && !over ? 1 : 0.45 }} className="npop" onClick={() => { if (sum > 0 && !over) onSave(Object.fromEntries(rows.map((r) => [r.id, parseFloat(amounts[r.id]) || 0]).filter(([, v]) => v > 0)), account); }}>
+          SAVE · {fmt(sum)} {rows.filter((r) => (parseFloat(amounts[r.id]) || 0) > 0).length} ENTRY ME
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- Sales (business receivables tracker: who paid, what is left, when it is due) ---------------- */
 
 const SALE_TYPES = ["B2B", "Reseller", "B2C", "Client"];
@@ -5062,9 +5157,9 @@ function applySalePayment(data, saleId, amt, date, account) {
   if (!sale || !amt || amt <= 0) return data;
   const fundDelta = fundDeltaForAmount(data.funds, amt, 1);
   const fundBalances = swapFundDelta(data.fundBalances, null, fundDelta);
-  const incomeId = Date.now() + Math.floor(Math.random() * 1000);
+  const incomeId = nextId();
   const income = { id: incomeId, amount: amt, source: saleIncomeSource(sale), note: `${sale.party}${sale.item ? ` — ${sale.item}` : ""} (sale payment)`, date, fundDelta, scope: "business", saleId };
-  const payment = { id: incomeId + 1, date, amount: amt, incomeId };
+  const payment = { id: nextId(), date, amount: amt, incomeId };
   const next = { ...data, income: [...data.income, income], fundBalances, sales: data.sales.map((s) => (s.id === saleId ? { ...s, payments: [...(s.payments || []), payment] } : s)) };
   return withAccountMovement(next, account, "in", amt, `Sale — ${sale.party}`, date);
 }
@@ -5098,6 +5193,9 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
   const [confirmDel, setConfirmDel] = useState(null);
   const [edit, setEdit] = useState(null);
   const [formErr, setFormErr] = useState(null);
+  const [view, setView] = useState(() => bizLS.get("sales_view", "party")); // party | list
+  const [openParty, setOpenParty] = useState(null);
+  const [alloc, setAlloc] = useState(null); // party name
 
   const sales = data.sales || [];
   const mk = monthKey(today);
@@ -5131,6 +5229,24 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
         return (a.dueDate || "9999").localeCompare(b.dueDate || "9999") || a.date.localeCompare(b.date);
       });
   }, [sales, typeFilter, statusFilter, today]);
+
+  const renderSaleRef = useRef(null);
+  // party-wise: every buyer once, with each of their entries kept separate underneath
+  const parties = useMemo(() => {
+    const shownIds = new Set(list.map((x) => x.id));
+    const map = {};
+    sales.filter((x) => typeFilter === "ALL" || x.channel === typeFilter).forEach((x) => { const k = (x.party || "—").trim(); (map[k] = map[k] || []).push(x); });
+    return Object.entries(map).map(([party, arr]) => {
+      const open = arr.filter((x) => saleBalance(x) > 0);
+      const od = open.filter((x) => saleStatus(x, today) === "overdue");
+      return {
+        party, sales: arr, open, shown: list.filter((x) => (x.party || "—").trim() === party && shownIds.has(x.id)),
+        types: [...new Set(arr.map((x) => x.channel))],
+        value: arr.reduce((a, x) => a + x.saleValue, 0), received: arr.reduce((a, x) => a + saleReceived(x), 0),
+        balance: open.reduce((a, x) => a + saleBalance(x), 0), overdue: od.length, overdueBal: od.reduce((a, x) => a + saleBalance(x), 0),
+      };
+    }).filter((g) => g.shown.length > 0).sort((a, b) => b.overdueBal - a.overdueBal || b.balance - a.balance || a.party.localeCompare(b.party));
+  }, [sales, list, typeFilter, today]);
 
   const addDays = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
 
@@ -5255,6 +5371,11 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
         </>
       )}
 
+      <div style={{ ...S.toggleWrap, marginTop: 16, marginBottom: 0 }}>
+        {[["party", "PARTY-WISE"], ["list", "SAB ENTRIES"]].map(([k, l]) => (
+          <button key={k} onClick={() => { setView(k); bizLS.set("sales_view", k); }} style={{ ...S.toggleBtn, flex: 1, padding: "9px 4px", ...(view === k ? { background: T.blue, color: T.bg } : {}) }}>{l}</button>
+        ))}
+      </div>
       <SectionLabel text="TYPE" />
       <div style={{ display: "flex", gap: 7, overflowX: "auto", paddingBottom: 4 }}>
         <button onClick={() => setTypeFilter("ALL")} style={{ ...chip(typeFilter === "ALL", T.ivory), flexShrink: 0 }}>ALL · {fmt(out.total)}</button>
@@ -5269,7 +5390,7 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
       </div>
 
       {list.length === 0 && <EmptyNote text={sales.length === 0 ? "koi sale nahi — NEW SALE dabao, ya James ko bolo: “rahul ko 12k ka bag becha, 5k aaya, baaki 15 din me”" : "is filter me kuch nahi"} />}
-      {list.map((s) => {
+      {(() => { renderSaleRef.current = (s) => {
         const got = saleReceived(s), bal = saleBalance(s), tag = statusTag(s);
         const pct = s.saleValue > 0 ? Math.min(100, Math.round((got / s.saleValue) * 100)) : 0;
         const profit = s.cost ? s.saleValue - s.cost : null;
@@ -5332,7 +5453,54 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
             )}
           </div>
         );
+      }; return null; })()}
+
+      {view === "list" && list.map((s) => renderSaleRef.current(s))}
+
+      {view === "party" && parties.map((g) => {
+        const isOpen = openParty === g.party;
+        return (
+          <div key={g.party} style={{ ...S.goalCard, marginTop: 10, boxShadow: glow(g.overdue > 0 ? T.orange : T.blue, 0.14), cursor: "pointer" }} className="npop-flat" onClick={() => setOpenParty(isOpen ? null : g.party)}>
+            <div style={S.budgetTop}>
+              <span style={S.budgetName}>{g.party.toUpperCase()} {g.types.map((t) => <span key={t} style={{ ...S.fineTag, color: SALE_TYPE_COLOR[t] || T.muted, borderColor: `${SALE_TYPE_COLOR[t] || T.muted}66` }}>{t.toUpperCase()}</span>)}</span>
+              <span style={{ fontSize: 10, color: T.muted }} className="tnum">{g.open.length} OPEN · {g.sales.length} ENTR{g.sales.length === 1 ? "Y" : "IES"}</span>
+            </div>
+            <div style={{ fontSize: 24, fontWeight: 700, color: g.balance > 0 ? T.blue : T.green, marginTop: 2 }} className="tnum">{g.balance > 0 ? fmt(g.balance) : "✓ SAB AAYA"}</div>
+            <div style={{ fontSize: 10, color: T.muted, marginTop: 2, fontWeight: 700 }} className="tnum">
+              {fmt(g.received)} AAYA OF {fmt(g.value)}{g.overdue > 0 ? <span style={{ color: T.orange }}> · {g.overdue} OVERDUE ({fmt(g.overdueBal)})</span> : null}
+            </div>
+            {g.value > 0 && (
+              <div style={{ height: 4, borderRadius: 3, background: T.bg, overflow: "hidden", marginTop: 6 }}>
+                <div style={{ width: `${Math.min(100, (g.received / g.value) * 100)}%`, height: "100%", background: T.green, borderRadius: 3 }} />
+              </div>
+            )}
+            {isOpen && (
+              <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 10, cursor: "default" }}>
+                {g.open.length > 1 && (
+                  <button style={{ ...S.submitBtnGreen, width: "100%", padding: "10px" }} className="npop" onClick={() => setAlloc(g.party)}>PAISA AAYA — {g.open.length} ENTRIES ME BAANTO</button>
+                )}
+                {g.shown.map((s) => renderSaleRef.current(s))}
+                {g.shown.length === 0 && <div style={{ fontSize: 10.5, color: T.muted, marginTop: 8 }}>is filter me is party ki koi entry nahi</div>}
+              </div>
+            )}
+          </div>
+        );
       })}
+
+      {alloc && (() => {
+        const g = parties.find((x) => x.party === alloc);
+        if (!g || g.open.length === 0) return null;
+        const rows = [...g.open].sort((x, y) => (x.dueDate || x.date).localeCompare(y.dueDate || y.date) || x.id - y.id)
+          .map((x) => ({ id: x.id, label: x.item || `sale ${fmt(x.saleValue)}`, sub: `${fmtDateShort(x.date)}${x.dueDate ? ` · due ${fmtDateShort(x.dueDate)}` : ""}`, balance: saleBalance(x) }));
+        return <AllocEditor title={`${alloc.toUpperCase()} — PAISA AAYA`} verb="AAYA" rows={rows} accent={T.green} onCancel={() => setAlloc(null)} onSave={(amounts, account) => {
+          let next = data; let total = 0;
+          Object.entries(amounts).forEach(([id, amt]) => { next = applySalePayment(next, Number(id), amt, today, account); total += amt; });
+          next = registerActivity(next, 5);
+          persist(next);
+          triggerNoteAnim(total, "in");
+          setAlloc(null);
+        }} />;
+      })()}
 
       {edit && (
         <EditEntryModal
@@ -6230,6 +6398,29 @@ function DuesTab({ data, persist }) {
     });
   };
   const removeEntry = (id) => persist({ ...data, [key]: list.filter((e) => e.id !== id) });
+  // ---- per-entry settlement: each entry is settled on its own (fully or partly) and keeps its own log ----
+  const today = todayISO();
+  const [settle, setSettle] = useState(null); // { id, amount, account }
+  const [logId, setLogId] = useState(null);
+  const [alloc, setAlloc] = useState(null); // party name — split one amount across that party's open entries
+  const [confirmDel, setConfirmDel] = useState(null);
+  const doSettle = (e) => {
+    const amt = parseFloat(settle.amount);
+    if (!amt || amt <= 0) return;
+    persist(applyDueSettlement(data, subTab, e.id, amt, today, settle.account));
+    setSettle(null);
+  };
+  const doAlloc = (amounts, account) => {
+    let next = data;
+    Object.entries(amounts).forEach(([id, amt]) => { next = applyDueSettlement(next, subTab, Number(id), amt, today, account); });
+    persist(next);
+    setAlloc(null);
+  };
+  const askRemove = (id) => {
+    if (confirmDel !== id) { setConfirmDel(id); setTimeout(() => setConfirmDel((c) => (c === id ? null : c)), 3000); return; }
+    removeEntry(id);
+    setConfirmDel(null);
+  };
   const totalPending = list.filter((e) => !excludedStatuses.includes(e.status)).reduce((s, e) => s + e.amount, 0);
 
   const startEdit = (e) => {
@@ -6244,7 +6435,7 @@ function DuesTab({ data, persist }) {
       [key]: list.map((e) =>
         e.id === editingId
           ? {
-              ...e, party: editValues.party.trim(), amount: amt, purpose: editValues.purpose, dueDate: editValues.dueDate || null, note: editValues.note.trim(),
+              ...e, party: editValues.party.trim(), amount: amt, ...(e.total != null ? { total: amt + dueSettled(e) } : {}), purpose: editValues.purpose, dueDate: editValues.dueDate || null, note: editValues.note.trim(),
               ...(subTab === "receivable" ? { isCOD: editValues.isCOD === "yes", minAmount: editValues.isCOD === "yes" && editValues.minAmount !== "" ? parseFloat(editValues.minAmount) || 0 : null } : {}),
             }
           : e
@@ -6266,6 +6457,10 @@ function DuesTab({ data, persist }) {
         entries: entries.sort((a, b) => b.id - a.id),
         totalPending: entries.filter((e) => !excludedStatuses.includes(e.status)).reduce((s, e) => s + e.amount, 0),
         totalAll: entries.reduce((s, e) => s + e.amount, 0),
+        open: entries.filter((e) => e.status === "pending"),
+        original: entries.filter((e) => e.status !== "rto").reduce((s, e) => s + dueOriginal(e), 0),
+        settled: entries.reduce((s, e) => s + dueSettled(e), 0),
+        overdue: entries.filter((e) => e.status === "pending" && e.dueDate && e.dueDate < todayISO()).length,
       }))
       .sort((a, b) => b.totalPending - a.totalPending);
   }, [list, doneStatus, excludedStatuses]);
@@ -6329,42 +6524,108 @@ function DuesTab({ data, persist }) {
             <div key={g.party} style={{ ...S.goalCard, boxShadow: glow(color), cursor: "pointer" }} className="npop-flat" onClick={() => setOpenParty(isOpen ? null : g.party)}>
               <div style={S.budgetTop}>
                 <span style={S.budgetName}>{g.party.toUpperCase()}</span>
-                <span style={{ fontSize: 10, color: T.muted }} className="tnum">{g.entries.length} ENTR{g.entries.length === 1 ? "Y" : "IES"}</span>
+                <span style={{ fontSize: 10, color: T.muted }} className="tnum">{g.open.length} OPEN · {g.entries.length} ENTR{g.entries.length === 1 ? "Y" : "IES"}</span>
               </div>
               <div style={{ fontSize: 24, fontWeight: 700, color, marginTop: 2 }} className="tnum">{fmt(g.totalPending)}</div>
-              {g.totalPending !== g.totalAll && (
-                <div style={{ fontSize: 10, color: T.muted, marginTop: 2 }} className="tnum">{fmt(g.totalAll)} TOTAL LOGGED</div>
+              <div style={{ fontSize: 10, color: T.muted, marginTop: 2, fontWeight: 700 }} className="tnum">
+                {fmt(g.settled)} SETTLED OF {fmt(g.original)}{g.overdue > 0 ? <span style={{ color: T.orange }}> · {g.overdue} OVERDUE</span> : null}
+              </div>
+              {g.original > 0 && (
+                <div style={{ height: 4, borderRadius: 3, background: T.bg, overflow: "hidden", marginTop: 6 }}>
+                  <div style={{ width: `${Math.min(100, (g.settled / g.original) * 100)}%`, height: "100%", background: color, borderRadius: 3 }} />
+                </div>
               )}
 
               {isOpen && (
                 <div style={S.expandPanel} onClick={(e) => e.stopPropagation()}>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {g.entries.map((e) => {
+                  {g.open.length > 1 && (
+                    <button style={{ ...S.submitBtnGreen, width: "100%", marginBottom: 10, padding: "10px", background: color, boxShadow: glow(color, 0.25) }} className="npop" onClick={() => setAlloc(g.party)}>
+                      {subTab === "receivable" ? "PAISA AAYA" : "PAISA DIYA"} — {g.open.length} ENTRIES ME BAANTO
+                    </button>
+                  )}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {g.entries.map((e, idx) => {
                       const isResolved = e.status !== "pending";
                       const isRTO = e.status === "rto";
+                      const orig = dueOriginal(e), got = dueSettled(e);
+                      const pays = e.payments || [];
+                      const lateDays = !isResolved && e.dueDate && e.dueDate < today ? dayDiff(e.dueDate, today) : 0;
                       return (
-                      <div key={e.id} style={S.ledgerRow}>
-                        <div style={S.ledgerMain}>
-                          <div style={{ ...S.ledgerCategory, textDecoration: isResolved ? "line-through" : "none", opacity: isResolved ? 0.5 : 1 }}>
-                            {e.purpose && <span style={{ ...S.fineTag, color: e.purpose === "business" ? T.blue : T.purple, borderColor: e.purpose === "business" ? T.blue : T.purple, marginLeft: 0, marginRight: 6 }}>{e.purpose.toUpperCase()}</span>}
-                            {e.isCOD && <span style={{ ...S.fineTag, color: T.gold, borderColor: T.gold, marginLeft: 0, marginRight: 6 }}>COD</span>}
-                            {isRTO && <span style={{ ...S.fineTag, marginLeft: 0, marginRight: 6 }}>RTO'D → INVENTORY</span>}
-                            {e.note || "—"}
+                      <div key={e.id} style={{ borderBottom: `1px solid ${T.line}`, padding: "10px 2px", display: "flex", flexDirection: "column", gap: 6 }}>
+                        <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                          <div style={S.ledgerMain}>
+                            <div style={{ ...S.ledgerCategory, opacity: isResolved ? 0.6 : 1 }}>
+                              <span style={{ color: T.muted, fontSize: 10, marginRight: 6 }}>#{g.entries.length - idx}</span>
+                              {e.purpose && <span style={{ ...S.fineTag, color: e.purpose === "business" ? T.blue : T.purple, borderColor: e.purpose === "business" ? T.blue : T.purple, marginLeft: 0, marginRight: 6 }}>{e.purpose.toUpperCase()}</span>}
+                              {e.isCOD && <span style={{ ...S.fineTag, color: T.gold, borderColor: T.gold, marginLeft: 0, marginRight: 6 }}>COD</span>}
+                              {isRTO && <span style={{ ...S.fineTag, marginLeft: 0, marginRight: 6 }}>RTO'D → INVENTORY</span>}
+                              {e.note || "—"}
+                            </div>
+                            <div style={S.ledgerNote} className="tnum">
+                              {fmt(got)} SETTLED OF {fmt(orig)}
+                              {e.dueDate && !isResolved ? (lateDays > 0 ? <span style={{ color: T.orange, fontWeight: 700 }}> · {lateDays} DAYS OVERDUE</span> : ` · EXPECTED ${fmtDate(e.dueDate)}`) : ""}
+                              {e.isCOD && e.minAmount != null ? ` · MIN ${fmt(e.minAmount)} IF RTO` : ""}
+                            </div>
                           </div>
-                          {e.dueDate && <div style={S.ledgerNote}>EXPECTED {fmtDate(e.dueDate)}</div>}
-                          {e.isCOD && e.minAmount != null && (
-                            <div style={S.ledgerNote}>MIN {fmt(e.minAmount)} IF RTO</div>
-                          )}
+                          <div style={{ textAlign: "right", flexShrink: 0 }}>
+                            <div style={{ ...S.ledgerAmt, color: isResolved ? T.muted : color }} className="tnum">{isResolved ? (isRTO ? "RTO" : "✓ SETTLED") : fmt(e.amount)}</div>
+                            {!isResolved && <div style={{ fontSize: 9, color: T.muted, fontWeight: 700 }}>BAAKI</div>}
+                          </div>
                         </div>
-                        <div style={{ ...S.ledgerAmt, color, opacity: isResolved ? 0.5 : 1 }} className="tnum">{fmt(e.amount)}</div>
-                        {subTab === "receivable" && e.status === "pending" && (
-                          <button style={S.editBtn} title="RTO — turn into inventory" onClick={(ev) => { ev.stopPropagation(); markRTO(e); }}><PackageCheck size={13} color={T.orange} /></button>
+                        {orig > 0 && !isRTO && (
+                          <div style={{ height: 4, borderRadius: 3, background: T.bg, overflow: "hidden" }}>
+                            <div style={{ width: `${isResolved && got === 0 ? 100 : Math.min(100, (got / orig) * 100)}%`, height: "100%", background: color, borderRadius: 3, opacity: isResolved ? 0.5 : 1 }} />
+                          </div>
                         )}
-                        <button style={S.smallToggle} onClick={(ev) => { ev.stopPropagation(); toggleStatus(e.id); }}>
-                          <Check size={12} color={e.status === doneStatus ? T.green : T.muted} />
-                        </button>
-                        <button style={S.editBtn} onClick={(ev) => { ev.stopPropagation(); startEdit(e); }}><Pencil size={12} color={T.muted} /></button>
-                        <button style={S.deleteBtn} onClick={(ev) => { ev.stopPropagation(); removeEntry(e.id); }}><Trash2 size={13} color={T.muted} /></button>
+
+                        {settle && settle.id === e.id ? (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                            <AmountInput autoFocus placeholder={subTab === "receivable" ? "kitna aaya" : "kitna diya"} value={settle.amount} onChange={(v) => setSettle({ ...settle, amount: v })} style={{ ...S.input, width: "100%", fontSize: 18, fontWeight: 700 }} className="tnum" />
+                            {parseFloat(settle.amount) > e.amount && <div style={{ fontSize: 10.5, color: T.orange, fontWeight: 700 }}>Baaki sirf {fmt(e.amount)} hai — utna hi lagega.</div>}
+                            <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
+                              <span style={{ fontSize: 10, color: T.muted, fontWeight: 700 }}>ACCOUNT</span>
+                              {["none", "cash", "bank"].map((a) => (
+                                <button key={a} onClick={() => setSettle({ ...settle, account: a })} style={{ background: settle.account === a ? T.surface : "none", color: settle.account === a ? T.ivory : T.muted, border: `1px solid ${settle.account === a ? T.lineStrong : T.line}`, borderRadius: T.radiusPill, padding: "5px 11px", fontSize: 10.5, fontWeight: 700 }}>{a === "none" ? "—" : a.toUpperCase()}</button>
+                              ))}
+                            </div>
+                            <div style={{ display: "flex", gap: 8 }}>
+                              <button style={{ ...S.submitBtnGreen, flex: 1, background: color, boxShadow: glow(color, 0.25) }} className="npop" onClick={() => doSettle(e)}>SAVE</button>
+                              <button style={S.correctionLink} onClick={() => setSettle(null)}>CANCEL</button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            {!isResolved && <button style={{ ...S.submitBtnGreen, flex: 1, padding: "8px", fontSize: 11, background: color, boxShadow: "none" }} className="npop" onClick={() => setSettle({ id: e.id, amount: String(e.amount), account: "none" })}>{subTab === "receivable" ? "PAISA AAYA" : "PAISA DIYA"}</button>}
+                            {isResolved && <span style={{ flex: 1 }} />}
+                            <button style={S.correctionLink} onClick={() => setLogId(logId === e.id ? null : e.id)}>{logId === e.id ? "HIDE" : `LOG · ${pays.length}`}</button>
+                            {subTab === "receivable" && e.status === "pending" && (
+                              <button style={S.editBtn} title="RTO — turn into inventory" onClick={() => markRTO(e)}><PackageCheck size={13} color={T.orange} /></button>
+                            )}
+                            {pays.length === 0 && !isRTO && (
+                              <button style={S.smallToggle} title="mark done / reopen without logging any money" onClick={() => toggleStatus(e.id)}>
+                                <Check size={12} color={e.status === doneStatus ? T.green : T.muted} />
+                              </button>
+                            )}
+                            <button style={S.editBtn} onClick={() => startEdit(e)}><Pencil size={12} color={T.muted} /></button>
+                            <button style={S.deleteBtn} onClick={() => askRemove(e.id)}>{confirmDel === e.id ? <span style={{ fontSize: 9, color: T.orange, fontWeight: 700 }}>SURE?</span> : <Trash2 size={13} color={T.muted} />}</button>
+                          </div>
+                        )}
+
+                        {logId === e.id && (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 5, paddingTop: 2 }}>
+                            <div style={{ fontSize: 10.5, color: T.muted }}>{fmtDateShort(new Date(e.id).toISOString().slice(0, 10))} · {fmt(orig)} ki entry bani</div>
+                            {pays.length === 0 && <div style={{ fontSize: 10.5, color: T.muted }}>{isResolved && !isRTO ? "bina payment log ke done mark hua" : "abhi tak kuch settle nahi hua"}</div>}
+                            {pays.map((p) => (
+                              <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11.5, fontWeight: 600 }}>
+                                <span>{fmtDateShort(p.date)} · {subTab === "receivable" ? "aaya" : "diya"}</span>
+                                <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                  <span className="tnum" style={{ color }}>{fmt(p.amount)}</span>
+                                  <button style={S.deleteBtn} title="ye payment hatao" onClick={() => persist(removeDuePayment(data, subTab, e.id, p.id))}><X size={12} color={T.muted} /></button>
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                       );
                     })}
@@ -6375,6 +6636,14 @@ function DuesTab({ data, persist }) {
           );
         })}
       </div>
+
+      {alloc && (() => {
+        const g = grouped.find((x) => x.party === alloc);
+        if (!g || g.open.length === 0) return null;
+        const rows = [...g.open].sort((x, y) => (x.dueDate || "9999").localeCompare(y.dueDate || "9999") || x.id - y.id)
+          .map((e) => ({ id: e.id, label: e.note || "—", sub: `${fmtDateShort(new Date(e.id).toISOString().slice(0, 10))}${e.dueDate ? ` · due ${fmtDateShort(e.dueDate)}` : ""}`, balance: e.amount }));
+        return <AllocEditor title={`${alloc.toUpperCase()} — ${subTab === "receivable" ? "PAISA AAYA" : "PAISA DIYA"}`} verb={subTab === "receivable" ? "AAYA" : "DIYA"} rows={rows} accent={subTab === "receivable" ? T.green : T.orange} onSave={doAlloc} onCancel={() => setAlloc(null)} />;
+      })()}
 
       {editingId && editValues && (
         <EditEntryModal

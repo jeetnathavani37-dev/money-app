@@ -216,3 +216,18 @@ Sales are business-only (`SCOPED_KEYS.sales`).
   amount), recent James log, open sales/dues, monthly totals, accounts, funds, last 40 entries.
 - **AI quota:** `api/_lib/gemini.js` falls back to other Gemini models when the main model's free-tier
   quota (20 requests/day) is exhausted. James shows a RETRY button when a call fails; nothing is saved.
+
+## Per-entry settlement in Dues and Sales
+
+Every due and every sale is its own entry and is settled on its own, fully or partly.
+- Dues: `applyDueSettlement(data, kind, entryId, amt, date, account)` reduces that entry's `amount`
+  (always the outstanding balance), keeps the original in `total`, appends to `payments`
+  (`{ id, date, amount, ledgerId, ledgerKind }`) and writes the linked ledger row (`dueId`): income
+  for a receivable, expense for a payable, with scope from the due's `purpose`. `removeDuePayment`
+  undoes one payment. The tick still marks an entry done/reopened without logging money, and is only
+  offered while the entry has no payments.
+- The party card shows open/total entries and settled-of-original; "ENTRIES ME BAANTO" opens
+  `AllocEditor`, which splits one amount across that party's open entries (oldest first, editable).
+- Sales has the same party-wise view (default) plus the flat list; split payments go through
+  `applySalePayment` per sale. James's `settle_due` uses `applyDueSettlement`, rolling over a party's
+  entries oldest first. Use `nextId()` for rows created in the same tick.
