@@ -241,3 +241,18 @@ Every due and every sale is its own entry and is settled on its own, fully or pa
 - The app never starts from empty data any more: if the row cannot be loaded it shows `AuthScreen`
   (login / no access / retry) instead, because saving empty data would overwrite the real books.
 - `khata_touch_auth()` records that a signed-in device loaded successfully (`khata_auth_log`).
+
+## Business features built around how Luxella actually works
+
+- **Deal tab** (`DealTab`, `computeDeal`): landed cost and margin for a sourcing deal/bid —
+  store price $ → coupon → sales tax → ₹/$ → reshipper bill (per-kg rate, minimum and rounding per
+  reshipper, with a "shared box" switch that drops minimum/rounding) → India courier. Shows the lowest
+  price for the minimum and good margins (profit ÷ landed cost, rounded up to ₹100), a verdict, and
+  flags margins above 60% as worth re-checking. "SALE BANAO" creates the sale (cost = landed) and can
+  optionally log the item cost as an expense and the reship bill as a payable to the reshipper.
+  Rates live in `data.bizSettings` (defaults in `DEFAULT_BIZ_SETTINGS`), editable under "MERE RATES".
+- **Sales**: advance chips (0 / 50% / 100%) with the usual terms shown per buyer type (`SALE_TERMS`,
+  `SALE_TERM_HINT` — suggestions only), a REMINDER button that copies a Luxella-voiced payment
+  reminder, and per-party pay speed (average days to clear) and profit.
+- **Biz tab cash-flow**: open business sales/receivables bucketed by when they are due (overdue, this
+  week, next week, later, no date) against business payables.

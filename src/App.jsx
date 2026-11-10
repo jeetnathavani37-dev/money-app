@@ -2374,6 +2374,7 @@ export default function Khata() {
         {tab === "overview" && <OverviewTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "business" && <BusinessTab data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "sales" && <SalesTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
+        {tab === "deal" && <DealTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "income" && <IncomeTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "expense" && <ExpenseTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "funds" && <FundsTab data={viewData} persist={scopedPersist} />}
@@ -2502,13 +2503,14 @@ function TopBar({ saving, xp, streak, nextCountryGoal, onOpenLockSetup, onOpenAc
 // which tabs each view gets — PERSONAL and BUSINESS each have their own set, ALL shows everything
 const NAV_BY_MODE = {
   personal: ["overview", "income", "expense", "funds", "goals", "dues", "accounts", "investments", "pool", "analytics"],
-  business: ["overview", "business", "sales", "expense", "dues", "investments", "analytics", "hustle"],
+  business: ["overview", "business", "sales", "deal", "expense", "dues", "investments", "analytics", "hustle"],
 };
 function BottomNav({ tab, setTab, mode }) {
   const allItems = [
     { id: "overview", label: "Home", icon: Home },
     { id: "business", label: "Biz", icon: Briefcase },
     { id: "sales", label: "Sales", icon: Receipt },
+    { id: "deal", label: "Deal", icon: Calculator },
     { id: "income", label: "Income", icon: ArrowUpCircle },
     { id: "expense", label: "Expense", icon: ArrowDownCircle },
     { id: "funds", label: "Funds", icon: Wallet },
@@ -4760,6 +4762,28 @@ function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAni
   const toPay = openPay.reduce((s, r) => s + r.amount, 0);
   const overdueRecv = [...openRecv.filter((r) => r.dueDate && r.dueDate < today), ...salesOut.overdue];
 
+  // cash-flow: every open business sale / receivable placed in the week it is due
+  const cash = useMemo(() => {
+    const items = [
+      ...salesOut.open.map((x) => ({ who: x.party, v: saleBalance(x), due: x.dueDate })),
+      ...openRecv.map((r) => ({ who: r.party, v: r.amount, due: r.dueDate || null })),
+    ];
+    const defs = [
+      { k: "OVERDUE", late: true, test: (d) => d !== null && d < 0 },
+      { k: "IS HAFTE", test: (d) => d !== null && d >= 0 && d <= 7 },
+      { k: "AGLE HAFTE", test: (d) => d !== null && d > 7 && d <= 14 },
+      { k: "USKE BAAD", test: (d) => d !== null && d > 14 },
+      { k: "DATE NAHI DI", test: (d) => d === null },
+    ];
+    const buckets = defs.map((b) => {
+      const mine = items.filter((it) => b.test(it.due ? dayDiff(today, it.due) : null));
+      const names = [...new Set(mine.map((it) => it.who))];
+      return { k: b.k, late: !!b.late, v: mine.reduce((a, it) => a + it.v, 0), n: mine.length, who: names.slice(0, 2).join(", ") + (names.length > 2 ? ` +${names.length - 2}` : "") };
+    });
+    const outNames = [...new Set(openPay.map((r) => r.party))];
+    return { buckets, max: Math.max(1, ...buckets.map((b) => b.v)), inTotal: items.reduce((a, it) => a + it.v, 0), outTotal: toPay, outWho: outNames.slice(0, 3).join(", ") + (outNames.length > 3 ? ` +${outNames.length - 3}` : "") };
+  }, [salesOut, openRecv, openPay, toPay, today]);
+
   // entries that are neither clearly business nor clearly personal — tag them so no number is silently wrong
   const unsorted = useMemo(() => {
     const a = data.income.filter((e) => entryClass(e, "income") === "unsorted").map((e) => ({ ...e, _k: "in" }));
@@ -4940,6 +4964,34 @@ function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAni
           <div style={{ ...S.statBoxNum, color: T.gold }} className="tnum">{fmt(toPay)}</div>
         </div>
       </div>
+
+      {(cash.inTotal > 0 || cash.outTotal > 0) && (
+        <>
+          <SectionLabel text="PAISA KAB AANA / JAANA HAI" />
+          <div style={S.formCard}>
+            {cash.buckets.filter((b) => b.v > 0).map((b) => (
+              <div key={b.k}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, fontWeight: 700, marginBottom: 4 }}>
+                  <span style={{ color: b.late ? T.orange : T.ivory }}>{b.k} <span style={{ color: T.muted, fontWeight: 600 }}>· {b.n} entr{b.n === 1 ? "y" : "ies"}{b.who ? ` · ${b.who}` : ""}</span></span>
+                  <span className="tnum" style={{ color: b.late ? T.orange : T.green }}>+{fmt(b.v)}</span>
+                </div>
+                <div style={{ height: 5, borderRadius: 3, background: T.bg, overflow: "hidden" }}>
+                  <div style={{ width: `${Math.max(3, (b.v / cash.max) * 100)}%`, height: "100%", background: b.late ? T.orange : T.green, borderRadius: 3 }} />
+                </div>
+              </div>
+            ))}
+            {cash.outTotal > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, fontWeight: 700, borderTop: `1px solid ${T.line}`, paddingTop: 8 }}>
+                <span>DENA HAI <span style={{ color: T.muted, fontWeight: 600 }}>· {cash.outWho}</span></span>
+                <span className="tnum" style={{ color: T.gold }}>−{fmt(cash.outTotal)}</span>
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 700, borderTop: `1px solid ${T.line}`, paddingTop: 8 }}>
+              <span>NET AANE WALA</span><span className="tnum" style={{ color: cash.inTotal - cash.outTotal >= 0 ? T.green : T.orange }}>{fmtSigned(cash.inTotal - cash.outTotal)}</span>
+            </div>
+          </div>
+        </>
+      )}
 
       {unsorted.length > 0 && (
         <>
@@ -5228,6 +5280,15 @@ function AllocEditor({ title, rows, accent, onSave, onCancel, verb }) {
 
 const SALE_TYPES = ["B2B", "Reseller", "B2C", "Client"];
 const SALE_TYPE_COLOR = { B2B: "#4FC8FF", Reseller: "#7C5CFF", B2C: "#E8C468", Client: "#E5FE40" };
+// Luxella's usual terms per buyer type — only ever offered as a visible suggestion, never applied silently
+const SALE_TERMS = { B2B: { receivedPct: 0, dueDays: 30 }, Reseller: { receivedPct: 100, dueDays: 0 }, Client: { receivedPct: 50, dueDays: 30 }, B2C: { receivedPct: 100, dueDays: 0 } };
+const SALE_TERM_HINT = { B2B: "KicksMachine: payout delivery ke ~7 din baad aata hai", Reseller: "Reseller: 100% advance", Client: "Client: 50% advance, baaki India pahunchne par", B2C: "B2C: aam taur par poora advance" };
+function saleReminderText(s) {
+  const bal = saleBalance(s);
+  const what = s.item ? ` for ${s.item}` : "";
+  const when = s.dueDate ? ` was due on ${fmtDate(s.dueDate)}` : " is pending";
+  return `Hello ${s.party}, a gentle reminder from Luxella — the balance of ${fmt(bal)}${what}${when}. Kindly arrange it at your convenience so we can keep everything moving smoothly. Thank you.`;
+}
 const saleReceived = (s) => (s.payments || []).reduce((a, p) => a + (p.amount || 0), 0);
 const saleBalance = (s) => Math.max(0, (s.saleValue || 0) - saleReceived(s));
 const dayDiff = (a, b) => Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);
@@ -5345,6 +5406,9 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
         types: [...new Set(arr.map((x) => x.channel))],
         value: arr.reduce((a, x) => a + x.saleValue, 0), received: arr.reduce((a, x) => a + saleReceived(x), 0),
         balance: open.reduce((a, x) => a + saleBalance(x), 0), overdue: od.length, overdueBal: od.reduce((a, x) => a + saleBalance(x), 0),
+        // how fast this buyer actually pays: sale date → the payment that cleared it, over fully paid sales
+        payDays: (() => { const paid = arr.filter((x) => saleBalance(x) <= 0 && (x.payments || []).length); if (!paid.length) return null; return Math.round(paid.reduce((a, x) => a + Math.max(0, dayDiff(x.date, x.payments[x.payments.length - 1].date)), 0) / paid.length); })(),
+        profit: arr.filter((x) => x.cost).reduce((a, x) => a + (x.saleValue - x.cost), 0), withCost: arr.filter((x) => x.cost).length,
       };
     }).filter((g) => g.shown.length > 0).sort((a, b) => b.overdueBal - a.overdueBal || b.balance - a.balance || a.party.localeCompare(b.party));
   }, [sales, list, typeFilter, today]);
@@ -5442,6 +5506,15 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
             <AmountInput placeholder="sale amount" value={form.saleValue} onChange={(v) => setForm({ ...form, saleValue: v })} style={S.input} className="tnum" />
             <AmountInput placeholder="received now" value={form.receivedNow} onChange={(v) => setForm({ ...form, receivedNow: v })} style={S.input} className="tnum" />
           </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ fontSize: 10, color: T.muted, fontWeight: 700, letterSpacing: "0.04em" }}>ADVANCE</span>
+            {[0, 50, 100].map((pct) => {
+              const v = parseFloat(form.saleValue) || 0;
+              const amt = String(Math.round((v * pct) / 100));
+              return <button key={pct} disabled={!v} onClick={() => setForm({ ...form, receivedNow: pct === 0 ? "0" : amt })} style={{ ...chip(v > 0 && form.receivedNow === (pct === 0 ? "0" : amt), T.green), opacity: v ? 1 : 0.4 }}>{pct === 0 ? "KUCH NAHI" : `${pct}%`}</button>;
+            })}
+          </div>
+          <div style={{ fontSize: 10, color: T.muted, fontWeight: 600 }}>{SALE_TERM_HINT[form.channel]}</div>
           <AmountInput placeholder="cost (optional — profit dikhane ke liye)" value={form.cost} onChange={(v) => setForm({ ...form, cost: v })} style={{ ...S.input, width: "100%" }} className="tnum" />
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
             <span style={{ fontSize: 10, color: T.muted, fontWeight: 700, letterSpacing: "0.04em" }}>BAAKI KAB TAK</span>
@@ -5532,6 +5605,7 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                 {bal > 0 && <button style={{ ...S.submitBtnGreen, flex: 1, padding: "10px" }} className="npop" onClick={() => setRecv({ id: s.id, amount: String(bal), account: "none" })}>PAISA AAYA</button>}
                 <button style={S.correctionLink} onClick={() => setOpenId(isOpen ? null : s.id)}>{isOpen ? "HIDE" : `LOG · ${(s.payments || []).length}`}</button>
+                {bal > 0 && <button style={S.correctionLink} title="reminder message copy karo" onClick={async () => { const ok = await copyToClipboard(saleReminderText(s)); setToast(ok ? "REMINDER COPIED — WHATSAPP ME PASTE KARO" : "COPY NAHI HUA"); setTimeout(() => setToast(null), 1800); }}>REMINDER</button>}
                 <button style={S.editBtn} onClick={() => setEdit({ id: s.id, values: { party: s.party, item: s.item || "", saleValue: String(s.saleValue), cost: s.cost ? String(s.cost) : "", dueDate: s.dueDate || "", channel: s.channel, note: s.note || "" } })} title="edit"><Pencil size={12} color={T.muted} /></button>
                 <button style={S.deleteBtn} onClick={() => delSale(s)} title="delete">{confirmDel === s.id ? <span style={{ fontSize: 9, color: T.orange, fontWeight: 700 }}>SURE?</span> : <Trash2 size={13} color={T.muted} />}</button>
               </div>
@@ -5570,6 +5644,11 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
             <div style={{ fontSize: 10, color: T.muted, marginTop: 2, fontWeight: 700 }} className="tnum">
               {fmt(g.received)} AAYA OF {fmt(g.value)}{g.overdue > 0 ? <span style={{ color: T.orange }}> · {g.overdue} OVERDUE ({fmt(g.overdueBal)})</span> : null}
             </div>
+            {(g.payDays !== null || g.withCost > 0) && (
+              <div style={{ fontSize: 10, color: T.muted, marginTop: 2, fontWeight: 700 }} className="tnum">
+                {g.payDays !== null ? `AVG ${g.payDays} DIN ME POORA DETA HAI` : ""}{g.payDays !== null && g.withCost > 0 ? " · " : ""}{g.withCost > 0 ? `PROFIT ${fmtSigned(g.profit)} (${g.withCost} ENTRY)` : ""}
+              </div>
+            )}
             {g.value > 0 && (
               <div style={{ height: 4, borderRadius: 3, background: T.bg, overflow: "hidden", marginTop: 6 }}>
                 <div style={{ width: `${Math.min(100, (g.received / g.value) * 100)}%`, height: "100%", background: T.green, borderRadius: 3 }} />
@@ -5620,6 +5699,262 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
             { key: "note", type: "text", label: "note (optional)" },
           ]}
         />
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Deal (landed cost + margin calculator for a sourcing deal / bid) ---------------- */
+
+// Luxella's own numbers — all editable in the tab and saved in data.bizSettings.
+const DEFAULT_BIZ_SETTINGS = {
+  fx: 95,            // his own ₹ per $ on retailer orders
+  minMargin: 20,     // % on landed cost below which a deal is not worth taking
+  goodMargin: 25,
+  reshippers: [
+    { id: "prabhmeet", name: "Prabhmeet (NJ)", rate: 1250, tax: 7, minKg: 0, roundKg: 0 },
+    { id: "ishaan_us", name: "Ishaan USA (DE)", rate: 1250, tax: 0, minKg: 1, roundKg: 0.5 },
+    { id: "yash", name: "Yash (DE)", rate: 1400, tax: 0, minKg: 0, roundKg: 0 },
+    { id: "ishaan_ca", name: "Ishaan Canada", rate: 1250, tax: 0, minKg: 1, roundKg: 1 },
+  ],
+};
+const bizSettings = (data) => {
+  const s = data.bizSettings || {};
+  return { ...DEFAULT_BIZ_SETTINGS, ...s, reshippers: Array.isArray(s.reshippers) && s.reshippers.length ? s.reshippers : DEFAULT_BIZ_SETTINGS.reshippers };
+};
+// weight the reshipper actually bills: rounded up to their step, and at least their minimum —
+// unless the parcel travels in a box with other items (then only the real weight counts)
+function chargeableKg(kg, r, shared) {
+  if (!kg || kg <= 0) return 0;
+  if (shared) return kg;
+  const rounded = r.roundKg > 0 ? Math.ceil(kg / r.roundKg - 1e-9) * r.roundKg : kg;
+  return Math.max(rounded, r.minKg || 0);
+}
+// Pure maths for one deal — every figure the tab shows comes from here.
+function computeDeal(f, cfg) {
+  const r = cfg.reshippers.find((x) => x.id === f.reshipper) || cfg.reshippers[0];
+  const price = parseFloat(f.priceUsd) || 0;
+  const net = price * (1 - (parseFloat(f.couponPct) || 0) / 100);
+  const taxPct = f.taxPct === "" || f.taxPct == null ? r.tax : parseFloat(f.taxPct) || 0;
+  const usd = net * (1 + taxPct / 100) + (parseFloat(f.usShipUsd) || 0);
+  const fx = parseFloat(f.fx) || cfg.fx;
+  const itemInr = usd * fx;
+  const billKg = chargeableKg(parseFloat(f.kg) || 0, r, !!f.shared);
+  const reship = billKg * r.rate;
+  const domestic = parseFloat(f.domestic) || 0;
+  const landed = itemInr + reship + domestic;
+  const cashback = net * ((parseFloat(f.cashbackPct) || 0) / 100) * fx;
+  const sell = parseFloat(f.sell) || 0;
+  const profit = sell - landed;
+  return {
+    r, net, taxPct, usd, fx, itemInr, billKg, reship, domestic, landed, cashback, sell, profit,
+    marginPct: landed > 0 && sell > 0 ? (profit / landed) * 100 : null,
+    minPrice: landed * (1 + cfg.minMargin / 100), goodPrice: landed * (1 + cfg.goodMargin / 100),
+  };
+}
+
+function DealTab({ data, persist, registerActivity, setToast, triggerNoteAnim }) {
+  const cfg = bizSettings(data);
+  const blank = { item: "", priceUsd: "", couponPct: "", taxPct: "", usShipUsd: "", fx: String(cfg.fx), kg: "", reshipper: bizLS.get("deal_reshipper", cfg.reshippers[0].id), shared: false, domestic: "", cashbackPct: "", sell: "" };
+  const [f, setF] = useState(blank);
+  const [showRates, setShowRates] = useState(false);
+  const [rates, setRates] = useState(null);
+  const [saveBox, setSaveBox] = useState(null); // { party, channel, receivedPct, dueDays, logCost, logReship }
+  const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+  const d = computeDeal(f, cfg);
+  const ready = d.landed > 0 && parseFloat(f.priceUsd) > 0;
+  const round100 = (n) => Math.ceil(n / 100) * 100;
+
+  const verdict = d.marginPct === null ? null
+    : d.marginPct > 60 ? { text: `${d.marginPct.toFixed(1)}% — MARGIN BAHUT ZYADA LAG RAHA HAI, NUMBERS EK BAAR CHECK KARO`, color: T.gold }
+    : d.marginPct >= cfg.goodMargin ? { text: `${d.marginPct.toFixed(1)}% — BADHIYA, LE LO`, color: T.green }
+    : d.marginPct >= cfg.minMargin ? { text: `${d.marginPct.toFixed(1)}% — THEEK HAI (${cfg.minMargin}% SE UPAR)`, color: T.gold }
+    : { text: `${d.marginPct.toFixed(1)}% — ${cfg.minMargin}% SE KAM, MAT LO`, color: T.orange };
+
+  const pickReshipper = (id) => { set("reshipper", id); set("taxPct", ""); bizLS.set("deal_reshipper", id); };
+  const chip = (active, color) => ({ background: active ? color : T.bg, color: active ? T.bg : T.ivory, border: `1px solid ${active ? color : T.line}`, borderRadius: T.radiusPill, padding: "7px 12px", fontSize: 11, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif", flexShrink: 0 });
+  const row = (label, value, opts = {}) => (
+    <div style={{ display: "flex", justifyContent: "space-between", fontSize: opts.big ? 14 : 12, fontWeight: opts.big ? 700 : 600, color: opts.color || (opts.big ? T.ivory : T.muted), padding: "3px 0" }}>
+      <span>{label}</span><span className="tnum">{value}</span>
+    </div>
+  );
+
+  const saveRates = () => {
+    const clean = { fx: parseFloat(rates.fx) || cfg.fx, minMargin: parseFloat(rates.minMargin) || cfg.minMargin, goodMargin: parseFloat(rates.goodMargin) || cfg.goodMargin,
+      reshippers: rates.reshippers.map((r) => ({ ...r, rate: parseFloat(r.rate) || 0, tax: parseFloat(r.tax) || 0, minKg: parseFloat(r.minKg) || 0, roundKg: parseFloat(r.roundKg) || 0 })) };
+    persist({ ...data, bizSettings: clean });
+    setF((x) => ({ ...x, fx: String(clean.fx) }));
+    setShowRates(false);
+    setToast("RATES SAVED"); setTimeout(() => setToast(null), 1200);
+  };
+
+  const saveDeal = () => {
+    const b = saveBox;
+    if (!b.party.trim() || !(d.sell > 0)) return;
+    const today = todayISO();
+    const due = b.dueDays ? (() => { const x = new Date(); x.setDate(x.getDate() + b.dueDays); return x.toISOString().slice(0, 10); })() : null;
+    const { next: withSale, sale } = createSale(data, { party: b.party, channel: b.channel, item: f.item, saleValue: d.sell, cost: Math.round(d.landed), dueDate: due, note: `landed ${fmt(d.landed)} · ${d.r.name}` });
+    const got = Math.round((d.sell * b.receivedPct) / 100);
+    let next = got > 0 ? applySalePayment(withSale, sale.id, got, today, "none") : withSale;
+    if (b.logCost && d.itemInr > 0) {
+      const amt = Math.round(d.itemInr);
+      const fundDelta = fundDeltaForAmount(next.funds, amt, -1);
+      next = { ...next, fundBalances: swapFundDelta(next.fundBalances, null, fundDelta), expenses: [...next.expenses, { id: nextId(), amount: amt, category: "Sourcing/Business", note: `${f.item || "item"} — $${d.usd.toFixed(2)} @ ₹${d.fx}`, date: today, unnecessary: false, fine: 0, fundDelta, photo: null, scope: "business", saleId: sale.id }] };
+    }
+    if (b.logReship && d.reship > 0) {
+      next = { ...next, payables: [...next.payables, { id: nextId(), party: d.r.name.replace(/\s*\(.*\)$/, ""), amount: Math.round(d.reship), purpose: "business", dueDate: null, note: `reship ${d.billKg} kg — ${f.item || "item"}`, status: "pending", isCOD: false, minAmount: null }] };
+    }
+    next = registerActivity(next, 5);
+    persist(next);
+    if (got > 0) triggerNoteAnim(got, "in");
+    setSaveBox(null); setF({ ...blank, reshipper: f.reshipper });
+    setToast("DEAL SAVED — SALES ME DEKHO"); setTimeout(() => setToast(null), 1600);
+  };
+
+  const inp = { ...S.input, width: "100%" };
+  const lab = { fontSize: 9.5, color: T.muted, fontWeight: 700, letterSpacing: "0.05em", marginBottom: 4 };
+  const cell = (label, node) => <div style={{ flex: 1, minWidth: 0 }}><div style={lab}>{label}</div>{node}</div>;
+
+  return (
+    <div>
+      <div style={S.sectionHeadRow}>
+        <SectionLabel text="DEAL CALCULATOR" noMargin />
+        <button style={S.correctionLink} onClick={() => { setRates(showRates ? null : JSON.parse(JSON.stringify(cfg))); setShowRates((v) => !v); }}>{showRates ? "CLOSE" : "MERE RATES"}</button>
+      </div>
+
+      {showRates && rates && (
+        <div style={{ ...S.formCard, border: `1px solid ${T.gold}55` }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            {cell("MERA ₹/$", <AmountInput value={String(rates.fx)} onChange={(v) => setRates({ ...rates, fx: v })} style={inp} className="tnum" />)}
+            {cell("MIN MARGIN %", <AmountInput value={String(rates.minMargin)} onChange={(v) => setRates({ ...rates, minMargin: v })} style={inp} className="tnum" />)}
+            {cell("ACHHA MARGIN %", <AmountInput value={String(rates.goodMargin)} onChange={(v) => setRates({ ...rates, goodMargin: v })} style={inp} className="tnum" />)}
+          </div>
+          {rates.reshippers.map((r, i) => {
+            const upd = (k, v) => setRates({ ...rates, reshippers: rates.reshippers.map((x, j) => (j === i ? { ...x, [k]: v } : x)) });
+            return (
+              <div key={r.id}>
+                <div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 5 }}>{r.name}</div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  {cell("₹/KG", <AmountInput value={String(r.rate)} onChange={(v) => upd("rate", v)} style={inp} className="tnum" />)}
+                  {cell("TAX %", <AmountInput value={String(r.tax)} onChange={(v) => upd("tax", v)} style={inp} className="tnum" />)}
+                  {cell("MIN KG", <AmountInput value={String(r.minKg)} onChange={(v) => upd("minKg", v)} style={inp} className="tnum" />)}
+                  {cell("ROUND KG", <AmountInput value={String(r.roundKg)} onChange={(v) => upd("roundKg", v)} style={inp} className="tnum" />)}
+                </div>
+              </div>
+            );
+          })}
+          <button style={S.submitBtnGreen} className="npop" onClick={saveRates}>SAVE RATES</button>
+        </div>
+      )}
+
+      <div style={S.formCard}>
+        <input type="text" placeholder="item (e.g. MK Jet Set crossbody)" value={f.item} onChange={(e) => set("item", e.target.value)} style={inp} />
+        <div style={{ display: "flex", gap: 8 }}>
+          {cell("STORE PRICE $", <AmountInput value={f.priceUsd} onChange={(v) => set("priceUsd", v)} placeholder="0" style={{ ...inp, fontSize: 18, fontWeight: 700 }} className="tnum" />)}
+          {cell("COUPON %", <AmountInput value={f.couponPct} onChange={(v) => set("couponPct", v)} placeholder="0" style={inp} className="tnum" />)}
+        </div>
+        <div>
+          <div style={lab}>RESHIPPER</div>
+          <div style={{ display: "flex", gap: 7, overflowX: "auto", paddingBottom: 2 }}>
+            {cfg.reshippers.map((r) => <button key={r.id} onClick={() => pickReshipper(r.id)} style={chip(f.reshipper === r.id, T.blue)}>{r.name.toUpperCase()}</button>)}
+          </div>
+          <div style={{ fontSize: 10, color: T.muted, marginTop: 5, fontWeight: 600 }} className="tnum">₹{d.r.rate}/kg · tax {d.r.tax}%{d.r.minKg ? ` · min ${d.r.minKg} kg` : " · actual weight"}{d.r.roundKg ? ` · ${d.r.roundKg} kg rounding` : ""}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {cell("WEIGHT KG", <AmountInput value={f.kg} onChange={(v) => set("kg", v)} placeholder="0" style={inp} className="tnum" />)}
+          {cell(`SALES TAX % (${d.r.tax})`, <AmountInput value={f.taxPct} onChange={(v) => set("taxPct", v)} placeholder={String(d.r.tax)} style={inp} className="tnum" />)}
+          {cell("₹/$", <AmountInput value={f.fx} onChange={(v) => set("fx", v)} style={inp} className="tnum" />)}
+        </div>
+        {(d.r.minKg > 0 || d.r.roundKg > 0) && (
+          <label style={S.checkboxRow}>
+            <input type="checkbox" checked={f.shared} onChange={(e) => set("shared", e.target.checked)} />
+            ISI BOX ME AUR ITEMS HAIN (MIN / ROUNDING NAHI LAGEGA)
+          </label>
+        )}
+        <div style={{ display: "flex", gap: 8 }}>
+          {cell("US SHIPPING $", <AmountInput value={f.usShipUsd} onChange={(v) => set("usShipUsd", v)} placeholder="0" style={inp} className="tnum" />)}
+          {cell("INDIA COURIER ₹", <AmountInput value={f.domestic} onChange={(v) => set("domestic", v)} placeholder="0" style={inp} className="tnum" />)}
+          {cell("CASHBACK %", <AmountInput value={f.cashbackPct} onChange={(v) => set("cashbackPct", v)} placeholder="0" style={inp} className="tnum" />)}
+        </div>
+      </div>
+
+      {ready && (
+        <>
+          <SectionLabel text="LANDED COST" />
+          <div style={S.formCard}>
+            {row(`Item — $${d.usd.toFixed(2)} × ₹${d.fx}${d.taxPct ? ` (tax ${d.taxPct}% included)` : ""}`, fmt(d.itemInr))}
+            {row(`Reship — ${d.billKg} kg × ₹${d.r.rate}${parseFloat(f.kg) > 0 && d.billKg !== parseFloat(f.kg) ? ` (asli ${f.kg} kg)` : ""}`, parseFloat(f.kg) > 0 ? fmt(d.reship) : "weight daalo")}
+            {d.domestic > 0 && row("India courier", fmt(d.domestic))}
+            <div style={{ borderTop: `1px solid ${T.line}`, margin: "4px 0" }} />
+            {row("LANDED COST", fmt(d.landed), { big: true })}
+            {d.cashback > 0 && row("cashback baad me aayega (cost me nahi ghataya)", `+${fmt(d.cashback)}`, { color: T.green })}
+            {!(parseFloat(f.kg) > 0) && <div style={{ fontSize: 10.5, color: T.orange, fontWeight: 700 }}>Weight nahi daala — reship cost abhi 0 gin raha hai, margin asli se zyada dikhega.</div>}
+          </div>
+
+          <SectionLabel text="KITNE ME BECHNA HAI" />
+          <div style={S.formCard}>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => set("sell", String(round100(d.minPrice)))} style={{ ...S.statBox, flex: 1, textAlign: "left", cursor: "pointer" }}>
+                <div style={S.statBoxLabel}>{cfg.minMargin}% KE LIYE KAM SE KAM</div>
+                <div style={{ ...S.statBoxNum, fontSize: 18, color: T.gold }} className="tnum">{fmt(round100(d.minPrice))}</div>
+              </button>
+              <button onClick={() => set("sell", String(round100(d.goodPrice)))} style={{ ...S.statBox, flex: 1, textAlign: "left", cursor: "pointer" }}>
+                <div style={S.statBoxLabel}>{cfg.goodMargin}% KE LIYE</div>
+                <div style={{ ...S.statBoxNum, fontSize: 18, color: T.green }} className="tnum">{fmt(round100(d.goodPrice))}</div>
+              </button>
+            </div>
+            <div>
+              <div style={lab}>BID / PAYOUT / QUOTE ₹ (JO MIL RAHA HAI)</div>
+              <AmountInput value={f.sell} onChange={(v) => set("sell", v)} placeholder="0" style={{ ...inp, fontSize: 20, fontWeight: 700 }} className="tnum" />
+            </div>
+            {verdict && (
+              <>
+                {row("PROFIT", fmtSigned(d.profit), { big: true, color: d.profit >= 0 ? T.green : T.orange })}
+                {d.cashback > 0 && row("cashback ke saath", fmtSigned(d.profit + d.cashback), { color: T.green })}
+                <div style={{ fontSize: 11.5, fontWeight: 700, color: verdict.color, background: `${verdict.color}14`, border: `1px solid ${verdict.color}55`, borderRadius: T.radiusSm, padding: "9px 11px", lineHeight: 1.4 }}>{verdict.text}</div>
+                <div style={{ fontSize: 9.5, color: T.muted, fontWeight: 600 }}>margin = profit ÷ landed cost</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button style={{ ...S.submitBtnGreen, flex: 1 }} className="npop" onClick={() => setSaveBox({ party: "", channel: "B2B", receivedPct: 0, dueDays: 7, logCost: false, logReship: false })}>SALE BANAO</button>
+                  <button style={S.correctionLink} onClick={() => setF({ ...blank, reshipper: f.reshipper })}>CLEAR</button>
+                </div>
+              </>
+            )}
+          </div>
+        </>
+      )}
+
+      {saveBox && (
+        <div style={S.calcOverlay} onClick={() => setSaveBox(null)}>
+          <div style={{ ...S.calcModal, maxHeight: "86vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+            <div style={S.calcHeader}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: T.ivory }}>SALE BANAO · {fmt(d.sell)}</div>
+              <button style={S.calcCloseBtn} onClick={() => setSaveBox(null)}><X size={16} color={T.ivory} /></button>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <input type="text" autoFocus placeholder="kisko (KicksMachine / client ka naam)" value={saveBox.party} onChange={(e) => setSaveBox({ ...saveBox, party: e.target.value })} style={inp} />
+              <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                {SALE_TYPES.map((t) => <button key={t} onClick={() => setSaveBox({ ...saveBox, channel: t, ...SALE_TERMS[t] })} style={chip(saveBox.channel === t, SALE_TYPE_COLOR[t])}>{t.toUpperCase()}</button>)}
+              </div>
+              <div>
+                <div style={lab}>ABHI KITNA AAYA</div>
+                <div style={{ display: "flex", gap: 7 }}>
+                  {[0, 50, 100].map((p) => <button key={p} onClick={() => setSaveBox({ ...saveBox, receivedPct: p })} style={chip(saveBox.receivedPct === p, T.green)}>{p === 0 ? "KUCH NAHI" : `${p}% · ${fmt(Math.round((d.sell * p) / 100))}`}</button>)}
+                </div>
+              </div>
+              {saveBox.receivedPct < 100 && (
+                <div>
+                  <div style={lab}>BAAKI KAB TAK</div>
+                  <div style={{ display: "flex", gap: 7 }}>
+                    {[7, 15, 30, 0].map((n) => <button key={n} onClick={() => setSaveBox({ ...saveBox, dueDays: n })} style={chip(saveBox.dueDays === n, T.gold)}>{n ? `${n} DIN` : "PATA NAHI"}</button>)}
+                  </div>
+                </div>
+              )}
+              <label style={S.checkboxRow}><input type="checkbox" checked={saveBox.logCost} onChange={(e) => setSaveBox({ ...saveBox, logCost: e.target.checked })} />ITEM KA {fmt(Math.round(d.itemInr))} KHARCHE ME BHI DAALO (CARD SE DE DIYA)</label>
+              {d.reship > 0 && <label style={S.checkboxRow}><input type="checkbox" checked={saveBox.logReship} onChange={(e) => setSaveBox({ ...saveBox, logReship: e.target.checked })} />{d.r.name.toUpperCase()} KA {fmt(Math.round(d.reship))} RESHIP "DENA HAI" ME DAALO</label>}
+              <button style={{ ...S.submitBtnGreen, opacity: saveBox.party.trim() ? 1 : 0.45 }} className="npop" onClick={saveDeal}>SAVE</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
