@@ -2029,6 +2029,7 @@ const emptyData = () => ({
   investments: [],
   sales: [],
   jamesLog: [],
+  cashbacks: [],
   xp: 0,
   streak: { count: 0, lastActiveDate: null },
   profitTargets: { daily: 10000, weekly: 70000, monthly: 300000 },
@@ -2101,6 +2102,7 @@ export default function Khata() {
         loaded.investments = loaded.investments || [];
         loaded.sales = loaded.sales || [];
         loaded.jamesLog = loaded.jamesLog || [];
+        loaded.cashbacks = loaded.cashbacks || [];
         loaded.openingBalance = loaded.openingBalance || 0;
         loaded.accounts = loaded.accounts || { cash: { startingBalance: 0, entries: [] }, bank: { startingBalance: 0, entries: [] }, forex: { startingBalance: 0, entries: [] } };
         ["cash", "bank", "forex"].forEach((k) => {
@@ -5051,6 +5053,8 @@ function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAni
         </button>
       </div>
 
+      <BizFinance data={data} mk={mk} />
+
       {(incomeBySrc.length > 0 || expenseByCat.length > 0) && (
         <>
           <SectionLabel text="WHERE IT CAME FROM / WENT" />
@@ -5068,6 +5072,8 @@ function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAni
           </div>
         </>
       )}
+
+      <CashbackCard data={data} persist={persist} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />
 
       <div style={S.sectionHeadRow}>
         <SectionLabel text="THIS MONTH'S BUSINESS ENTRIES" noMargin />
@@ -5761,6 +5767,32 @@ function DealTab({ data, persist, registerActivity, setToast, triggerNoteAnim })
   const [rates, setRates] = useState(null);
   const [saveBox, setSaveBox] = useState(null); // { party, channel, receivedPct, dueDays, logCost, logReship }
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+  // ---- box: several items travelling together — weight is added up first, then the reshipper's minimum/rounding applies once ----
+  const [box, setBoxRaw] = useState(() => { try { return JSON.parse(bizLS.get("deal_box", "[]")) || []; } catch { return []; } });
+  const setBox = (v) => { setBoxRaw(v); bizLS.set("deal_box", JSON.stringify(v)); };
+  const boxCalc = useMemo(() => {
+    if (!box.length) return null;
+    const r = cfg.reshippers.find((x) => x.id === box[0].reshipper) || cfg.reshippers[0];
+    const parts = box.map((it) => ({ it, d: computeDeal({ ...it, shared: true, reshipper: r.id }, cfg) }));
+    const kg = box.reduce((a, it) => a + (parseFloat(it.kg) || 0), 0);
+    const billKg = chargeableKg(kg, r, false);
+    const reship = billKg * r.rate;
+    const rows = parts.map(({ it, d: x }) => {
+      const share = kg > 0 ? ((parseFloat(it.kg) || 0) / kg) * reship : 0;
+      const landed = x.itemInr + x.domestic + share;
+      return { id: it.id, item: it.item || "item", usd: x.usd, kg: parseFloat(it.kg) || 0, landed, sell: x.sell, profit: x.sell > 0 ? x.sell - landed : null };
+    });
+    const tot = (k) => rows.reduce((a, x) => a + (x[k] || 0), 0);
+    const priced = rows.filter((x) => x.sell > 0);
+    const landedPriced = priced.reduce((a, x) => a + x.landed, 0);
+    return { r, rows, kg, billKg, reship, usd: tot("usd"), itemInr: parts.reduce((a, p2) => a + p2.d.itemInr, 0), landed: tot("landed"), sell: tot("sell"), profit: priced.reduce((a, x) => a + x.profit, 0), margin: landedPriced > 0 ? (priced.reduce((a, x) => a + x.profit, 0) / landedPriced) * 100 : null, unpriced: rows.length - priced.length, soloReship: parts.reduce((a, p2) => a + chargeableKg(parseFloat(p2.it.kg) || 0, r, false) * r.rate, 0) };
+  }, [box, cfg]);
+  const addToBox = () => {
+    if (box.length && box[0].reshipper !== f.reshipper) { setToast("BOX ME EK HI RESHIPPER HO SAKTA HAI"); setTimeout(() => setToast(null), 1600); return; }
+    setBox([...box, { ...f, id: Date.now() }]);
+    setF({ ...blank, reshipper: f.reshipper, fx: f.fx });
+    setToast("BOX ME JUD GAYA"); setTimeout(() => setToast(null), 1000);
+  };
   const d = computeDeal(f, cfg);
   const ready = d.landed > 0 && parseFloat(f.priceUsd) > 0;
   const round100 = (n) => Math.ceil(n / 100) * 100;
@@ -5847,6 +5879,38 @@ function DealTab({ data, persist, registerActivity, setToast, triggerNoteAnim })
         </div>
       )}
 
+      {boxCalc && (
+        <>
+          <div style={S.sectionHeadRow}>
+            <SectionLabel text={`BOX · ${box.length} ITEMS · ${boxCalc.r.name.toUpperCase()}`} noMargin />
+            <button style={S.correctionLink} onClick={() => setBox([])}>BOX KHAALI KARO</button>
+          </div>
+          <div style={{ ...S.formCard, border: `1px solid ${T.blue}55` }}>
+            {boxCalc.rows.map((x) => (
+              <div key={x.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5, fontWeight: 600 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{x.item}</div>
+                  <div style={{ fontSize: 10, color: T.muted }} className="tnum">${x.usd.toFixed(2)} · {x.kg} kg · landed {fmt(x.landed)}</div>
+                </div>
+                <div style={{ textAlign: "right" }} className="tnum">
+                  <div>{x.sell > 0 ? fmt(x.sell) : "—"}</div>
+                  <div style={{ fontSize: 10, color: x.profit === null ? T.muted : x.profit >= 0 ? T.green : T.orange }}>{x.profit === null ? "price nahi" : `${fmtSigned(x.profit)} · ${Math.round((x.profit / x.landed) * 100)}%`}</div>
+                </div>
+                <button style={S.deleteBtn} onClick={() => setBox(box.filter((y) => y.id !== x.id))}><X size={12} color={T.muted} /></button>
+              </div>
+            ))}
+            <div style={{ borderTop: `1px solid ${T.line}`, margin: "2px 0" }} />
+            {row(`Card se dena — $${boxCalc.usd.toFixed(2)}`, fmt(boxCalc.itemInr))}
+            {row(`Reship — asli ${Number(boxCalc.kg.toFixed(2))} kg → bill ${boxCalc.billKg} kg × ₹${boxCalc.r.rate}`, fmt(boxCalc.reship))}
+            {boxCalc.soloReship > boxCalc.reship + 0.5 && row("saath bhejne se bachat (alag-alag bhejne ke mukable)", `+${fmt(boxCalc.soloReship - boxCalc.reship)}`, { color: T.green })}
+            {row("KUL LANDED", fmt(boxCalc.landed), { big: true })}
+            {boxCalc.sell > 0 && row("KUL BIKRI", fmt(boxCalc.sell), { big: true })}
+            {boxCalc.margin !== null && row("KUL PROFIT", `${fmtSigned(boxCalc.profit)} · ${boxCalc.margin.toFixed(1)}%`, { big: true, color: boxCalc.margin >= cfg.minMargin ? T.green : T.orange })}
+            {boxCalc.unpriced > 0 && <div style={{ fontSize: 10.5, color: T.gold, fontWeight: 700 }}>{boxCalc.unpriced} item ka bechne ka price nahi daala — profit sirf baaki items ka hai.</div>}
+          </div>
+        </>
+      )}
+
       <div style={S.formCard}>
         <input type="text" placeholder="item (e.g. MK Jet Set crossbody)" value={f.item} onChange={(e) => set("item", e.target.value)} style={inp} />
         <div style={{ display: "flex", gap: 8 }}>
@@ -5919,6 +5983,7 @@ function DealTab({ data, persist, registerActivity, setToast, triggerNoteAnim })
                 </div>
               </>
             )}
+            <button style={{ ...S.submitBtnGreen, background: "none", color: T.blue, border: `1px solid ${T.blue}88`, boxShadow: "none" }} className="npop" onClick={addToBox}>+ BOX ME JODO (KAI ITEMS KA TOTAL)</button>
           </div>
         </>
       )}
@@ -5957,6 +6022,221 @@ function DealTab({ data, persist, registerActivity, setToast, triggerNoteAnim })
         </div>
       )}
     </div>
+  );
+}
+
+/* ---------------- Business finance: statement, target, where the money sits, cashback ---------------- */
+
+const accountBal = (a) => (a ? (a.startingBalance || 0) + (a.entries || []).reduce((x, e) => x + (e.type === "in" ? e.amount : -e.amount), 0) : 0);
+const fyStartKey = (mk) => { const [y, m] = mk.split("-").map(Number); return `${m >= 4 ? y : y - 1}-04`; };
+
+// Cash-basis profit & loss for one month: money that actually came in and went out for the business.
+function buildStatement(data, mk) {
+  const saleById = new Map((data.sales || []).map((x) => [x.id, x]));
+  const inc = data.income.filter((e) => monthKey(e.date) === mk && entryIsBusiness(e, "income"));
+  const exp = data.expenses.filter((e) => monthKey(e.date) === mk && entryIsBusiness(e, "expense"));
+  const rev = {};
+  inc.forEach((e) => {
+    const sale = e.saleId ? saleById.get(e.saleId) : null;
+    const k = sale ? `Sales — ${sale.channel}` : e.source === "Sourcex Payout" ? "Sourcex payout" : e.source === "KicksMachine" ? "KicksMachine payout" : e.source || "Other";
+    rev[k] = (rev[k] || 0) + e.amount;
+  });
+  const cost = {};
+  exp.forEach((e) => { cost[e.category] = (cost[e.category] || 0) + e.amount; });
+  const revenue = inc.reduce((a, e) => a + e.amount, 0);
+  const goods = (cost["Sourcing/Business"] || 0);
+  const shipping = (cost["Shipping/Logistics"] || 0);
+  const otherLines = Object.entries(cost).filter(([k]) => k !== "Sourcing/Business" && k !== "Shipping/Logistics").sort((a, b) => b[1] - a[1]);
+  const other = otherLines.reduce((a, [, v]) => a + v, 0);
+  const gross = revenue - goods - shipping;
+  return { rev: Object.entries(rev).sort((a, b) => b[1] - a[1]), revenue, goods, shipping, otherLines, other, gross, net: gross - other, totalCost: goods + shipping + other };
+}
+
+function BizFinance({ data, mk }) {
+  const today = todayISO();
+  const st = useMemo(() => buildStatement(data, mk), [data, mk]);
+  const isCurrent = mk === monthKey(today);
+  const target = data.profitTargets?.monthly || 0;
+  const [y, m] = mk.split("-").map(Number);
+  const dim = new Date(y, m, 0).getDate();
+  const day = isCurrent ? Number(today.slice(8, 10)) : dim;
+  const runRate = isCurrent && day > 0 ? (st.net / day) * dim : st.net;
+  const left = Math.max(0, target - st.net);
+  const daysLeft = dim - day;
+
+  // financial year (Apr–Mar) up to the selected month
+  const fy = useMemo(() => {
+    const start = fyStartKey(mk);
+    let rev = 0, cost = 0, months = 0, k = start;
+    while (k <= mk) { const s = buildStatement(data, k); rev += s.revenue; cost += s.totalCost; months += 1; k = shiftMonthKey(k, 1); }
+    return { start, rev, cost, net: rev - cost, months };
+  }, [data, mk]);
+
+  // where the business money is sitting right now
+  const wc = useMemo(() => {
+    const inv = data.investments || [];
+    const stock = inv.filter((i) => i.investmentType === "Inventory Stock" && i.status === "in_stock").reduce((a, i) => a + (i.amount || 0), 0);
+    const transit = inv.filter((i) => String(i.status || "").startsWith("pending_landing")).reduce((a, i) => a + (i.amount || 0), 0);
+    const so = salesOutstanding(data, today);
+    const recv = (data.receivables || []).filter((r) => r.purpose === "business" && r.status === "pending").reduce((a, r) => a + r.amount, 0);
+    const pay = (data.payables || []).filter((r) => r.purpose === "business" && r.status === "pending").reduce((a, r) => a + r.amount, 0);
+    const cash = accountBal(data.accounts?.cash) + accountBal(data.accounts?.bank);
+    return { stock, transit, toReceive: so.total + recv, overdue: so.overdueTotal, pay, cash, locked: stock + transit + so.total + recv - pay };
+  }, [data, today]);
+
+  const line = (label, value, o = {}) => (
+    <div style={{ display: "flex", justifyContent: "space-between", fontSize: o.big ? 13.5 : 12, fontWeight: o.big ? 700 : 600, color: o.color || (o.big ? T.ivory : o.sub ? T.muted : T.ivory), padding: o.big ? "5px 0 2px" : "2px 0", paddingLeft: o.sub ? 12 : 0, ...(o.rule ? { borderTop: `1px solid ${T.line}`, marginTop: 4 } : {}) }}>
+      <span>{label}</span><span className="tnum">{value}</span>
+    </div>
+  );
+  const pct = (n, dOf) => (dOf > 0 ? ` (${Math.round((n / dOf) * 100)}%)` : "");
+
+  return (
+    <>
+      {target > 0 && (
+        <>
+          <SectionLabel text={`MONTHLY TARGET · ${fmt(target)}`} />
+          <div style={S.formCard}>
+            <div style={{ height: 8, borderRadius: 4, background: T.bg, overflow: "hidden" }}>
+              <div style={{ width: `${Math.max(0, Math.min(100, (st.net / target) * 100))}%`, height: "100%", background: st.net >= target ? T.green : T.blue, borderRadius: 4 }} />
+            </div>
+            {line("Ab tak profit", `${fmtSigned(st.net)}${pct(Math.max(0, st.net), target)}`, { big: true, color: st.net >= 0 ? T.green : T.orange })}
+            {isCurrent && st.net < target && daysLeft > 0 && line(`Baaki ${fmt(left)} · ${daysLeft} din bache`, `${fmt(Math.ceil(left / daysLeft))} / din chahiye`, { sub: true })}
+            {isCurrent && day > 0 && line("Isi raftaar se mahina khatam hoga", fmtSigned(Math.round(runRate)), { sub: true, color: runRate >= target ? T.green : T.gold })}
+            {st.net >= target && line("Target poora", "✓", { color: T.green })}
+          </div>
+        </>
+      )}
+
+      <SectionLabel text={`STATEMENT · ${monthLabel(mk).toUpperCase()}`} />
+      <div style={S.formCard}>
+        {line("PAISA AAYA (REVENUE)", fmt(st.revenue), { big: true, color: T.green })}
+        {st.rev.map(([k, v]) => line(k, fmt(v), { sub: true }))}
+        {st.revenue === 0 && line("is mahine abhi kuch nahi aaya", "—", { sub: true })}
+        {line("Maal ka kharcha (sourcing)", `−${fmt(st.goods)}`, { rule: true })}
+        {line("Shipping / reship", `−${fmt(st.shipping)}`)}
+        {line("GROSS PROFIT", `${fmtSigned(st.gross)}${pct(st.gross, st.revenue)}`, { big: true, rule: true, color: st.gross >= 0 ? T.ivory : T.orange })}
+        {st.otherLines.map(([k, v]) => line(k, `−${fmt(v)}`, { sub: true }))}
+        {line("NET PROFIT", fmtSigned(st.net), { big: true, rule: true, color: st.net >= 0 ? T.green : T.orange })}
+        {st.totalCost > 0 && line("Kharche par margin (profit ÷ kul kharcha)", `${Math.round((st.net / st.totalCost) * 100)}%`, { sub: true })}
+        <div style={{ fontSize: 9.5, color: T.muted, fontWeight: 600, lineHeight: 1.5 }}>Cash ke hisaab se: jis mahine paisa aaya ya gaya, usi me gina. Jo sale ka paisa abhi baaki hai wo yahan nahi, neeche "lena hai" me hai.</div>
+      </div>
+
+      <SectionLabel text={`SAAL (FY ${fy.start.slice(0, 4)}–${String(Number(fy.start.slice(0, 4)) + 1).slice(2)}) AB TAK · ${fy.months} MAHINE`} />
+      <div style={S.statGrid}>
+        <div style={S.statBox}><div style={S.statBoxLabel}>REVENUE</div><div style={{ ...S.statBoxNum, fontSize: 17, color: T.green }} className="tnum">{fmt(fy.rev)}</div></div>
+        <div style={S.statBox}><div style={S.statBoxLabel}>KHARCHA</div><div style={{ ...S.statBoxNum, fontSize: 17, color: T.orange }} className="tnum">{fmt(fy.cost)}</div></div>
+        <div style={S.statBox}><div style={S.statBoxLabel}>NET PROFIT</div><div style={{ ...S.statBoxNum, fontSize: 17, color: fy.net >= 0 ? T.green : T.orange }} className="tnum">{fmtSigned(fy.net)}</div></div>
+        <div style={S.statBox}><div style={S.statBoxLabel}>AVG / MAHINA</div><div style={{ ...S.statBoxNum, fontSize: 17 }} className="tnum">{fmtSigned(Math.round(fy.net / Math.max(1, fy.months)))}</div></div>
+      </div>
+
+      <SectionLabel text="BUSINESS KA PAISA KAHAN HAI" />
+      <div style={S.formCard}>
+        {line("Stock haath me", fmt(wc.stock))}
+        {line("Maal raaste me (order diya, aaya nahi)", fmt(wc.transit))}
+        {line(`Lena hai (sales + dues)${wc.overdue > 0 ? ` · ${fmt(wc.overdue)} overdue` : ""}`, fmt(wc.toReceive), { color: wc.overdue > 0 ? T.gold : T.ivory })}
+        {line("Dena hai (reshipper, supplier…)", `−${fmt(wc.pay)}`)}
+        {line("BUSINESS ME LAGA HUA", fmtSigned(wc.locked), { big: true, rule: true, color: T.blue })}
+        {line("Cash + bank me (personal + business dono)", fmt(wc.cash), { sub: true })}
+      </div>
+    </>
+  );
+}
+
+// Cashback from TopCashback / Rakuten: tracked per order from pending → confirmed → paid out.
+function CashbackCard({ data, persist, setToast, triggerNoteAnim }) {
+  const cfg = bizSettings(data);
+  const list = data.cashbacks || [];
+  const blank = { site: "TopCashback", store: "", orderUsd: "", cbUsd: "" };
+  const [form, setForm] = useState(blank);
+  const [show, setShow] = useState(false);
+  const [payFor, setPayFor] = useState(null); // { id, inr }
+  const [confirmDel, setConfirmDel] = useState(null);
+  const sum = (st) => list.filter((c) => c.status === st).reduce((a, c) => a + (c.cbUsd || 0), 0);
+  const pending = sum("pending"), confirmed = sum("confirmed");
+  const paidInr = list.filter((c) => c.status === "paid").reduce((a, c) => a + (c.paidInr || 0), 0);
+  const add = () => {
+    const cb = parseFloat(form.cbUsd);
+    if (!form.store.trim() || !cb || cb <= 0) return;
+    persist({ ...data, cashbacks: [...list, { id: nextId(), date: todayISO(), site: form.site, store: form.store.trim(), orderUsd: parseFloat(form.orderUsd) || null, cbUsd: cb, status: "pending" }] });
+    setForm({ ...blank, site: form.site }); setShow(false);
+  };
+  const setStatus = (id, status) => persist({ ...data, cashbacks: list.map((c) => (c.id === id ? { ...c, status } : c)) });
+  const markPaid = (c) => {
+    const inr = parseFloat(payFor.inr);
+    if (!inr || inr <= 0) return;
+    const fundDelta = fundDeltaForAmount(data.funds, inr, 1);
+    const incomeId = nextId();
+    persist({
+      ...data, fundBalances: swapFundDelta(data.fundBalances, null, fundDelta),
+      income: [...data.income, { id: incomeId, amount: inr, source: "Other Business", note: `Cashback — ${c.site} · ${c.store}`, date: todayISO(), fundDelta, scope: "business", cashbackId: c.id }],
+      cashbacks: list.map((x) => (x.id === c.id ? { ...x, status: "paid", paidInr: inr, paidDate: todayISO(), incomeId } : x)),
+    });
+    triggerNoteAnim(inr, "in"); setPayFor(null);
+    setToast("CASHBACK INCOME ME JUD GAYA"); setTimeout(() => setToast(null), 1500);
+  };
+  const del = (c) => {
+    if (confirmDel !== c.id) { setConfirmDel(c.id); setTimeout(() => setConfirmDel((x) => (x === c.id ? null : x)), 3000); return; }
+    persist({ ...data, cashbacks: list.filter((x) => x.id !== c.id) }); setConfirmDel(null);
+  };
+  const chip = (active, color) => ({ background: active ? color : T.bg, color: active ? T.bg : T.ivory, border: `1px solid ${active ? color : T.line}`, borderRadius: T.radiusPill, padding: "6px 11px", fontSize: 10.5, fontWeight: 700 });
+  const stColor = { pending: T.gold, confirmed: T.blue, paid: T.green };
+  const open = list.filter((c) => c.status !== "paid").sort((a, b) => a.date.localeCompare(b.date));
+  return (
+    <>
+      <div style={S.sectionHeadRow}>
+        <SectionLabel text="CASHBACK (TOPCASHBACK / RAKUTEN)" noMargin />
+        <button style={S.correctionLink} onClick={() => setShow((v) => !v)}>{show ? "CANCEL" : "+ ADD"}</button>
+      </div>
+      <div style={S.formCard}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontWeight: 700 }}>
+          <span style={{ color: T.gold }} className="tnum">PENDING ${pending.toFixed(2)}</span>
+          <span style={{ color: T.blue }} className="tnum">CONFIRMED ${confirmed.toFixed(2)}</span>
+          <span style={{ color: T.green }} className="tnum">MILA {fmt(paidInr)}</span>
+        </div>
+        {(pending + confirmed) > 0 && <div style={{ fontSize: 10, color: T.muted, fontWeight: 600 }} className="tnum">aana baaki ≈ {fmt(Math.round((pending + confirmed) * cfg.fx))} (₹{cfg.fx}/$ par)</div>}
+        {show && (
+          <>
+            <div style={{ display: "flex", gap: 7 }}>
+              {["TopCashback", "Rakuten", "Other"].map((x) => <button key={x} onClick={() => setForm({ ...form, site: x })} style={chip(form.site === x, T.blue)}>{x.toUpperCase()}</button>)}
+            </div>
+            <input type="text" placeholder="store (e.g. Michael Kors)" value={form.store} onChange={(e) => setForm({ ...form, store: e.target.value })} style={{ ...S.input, width: "100%" }} />
+            <div style={S.formRow}>
+              <AmountInput placeholder="order $ (optional)" value={form.orderUsd} onChange={(v) => setForm({ ...form, orderUsd: v })} style={S.input} className="tnum" />
+              <AmountInput placeholder="cashback $" value={form.cbUsd} onChange={(v) => setForm({ ...form, cbUsd: v })} style={S.input} className="tnum" />
+            </div>
+            <button style={S.submitBtnGreen} className="npop" onClick={add}>SAVE</button>
+          </>
+        )}
+        {open.length === 0 && !show && <div style={{ fontSize: 10.5, color: T.muted }}>koi cashback pending nahi — order karke yahan daalo, bhoolega nahi</div>}
+        {open.map((c) => (
+          <div key={c.id} style={{ borderTop: `1px solid ${T.line}`, paddingTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600 }}>{c.store} <span style={{ ...S.fineTag, color: stColor[c.status], borderColor: `${stColor[c.status]}66` }}>{c.status.toUpperCase()}</span></div>
+                <div style={{ fontSize: 10, color: T.muted }} className="tnum">{c.site} · {fmtDateShort(c.date)} · {dayDiff(c.date, todayISO())} din{c.orderUsd ? ` · order $${c.orderUsd}` : ""}</div>
+              </div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: stColor[c.status] }} className="tnum">${c.cbUsd.toFixed(2)}</div>
+            </div>
+            {payFor && payFor.id === c.id ? (
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <AmountInput autoFocus placeholder="₹ kitna mila" value={payFor.inr} onChange={(v) => setPayFor({ ...payFor, inr: v })} style={{ ...S.input, flex: 1 }} className="tnum" />
+                <button style={{ ...S.submitBtnGreen, padding: "9px 14px" }} className="npop" onClick={() => markPaid(c)}>SAVE</button>
+                <button style={S.correctionLink} onClick={() => setPayFor(null)}>CANCEL</button>
+              </div>
+            ) : (
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                {c.status === "pending" && <button style={S.correctionLink} onClick={() => setStatus(c.id, "confirmed")}>CONFIRMED HO GAYA</button>}
+                {c.status === "confirmed" && <button style={S.correctionLink} onClick={() => setStatus(c.id, "pending")}>WAPAS PENDING</button>}
+                <button style={{ ...S.correctionLink, color: T.green }} onClick={() => setPayFor({ id: c.id, inr: String(Math.round(c.cbUsd * cfg.fx)) })}>PAISA MIL GAYA</button>
+                <span style={{ flex: 1 }} />
+                <button style={S.deleteBtn} onClick={() => del(c)}>{confirmDel === c.id ? <span style={{ fontSize: 9, color: T.orange, fontWeight: 700 }}>SURE?</span> : <Trash2 size={13} color={T.muted} />}</button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 

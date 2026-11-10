@@ -256,3 +256,17 @@ Every due and every sale is its own entry and is settled on its own, fully or pa
   reminder, and per-party pay speed (average days to clear) and profit.
 - **Biz tab cash-flow**: open business sales/receivables bucketed by when they are due (overdue, this
   week, next week, later, no date) against business payables.
+
+## Business finance views (Biz tab) and the deal box
+
+- `BizFinance` (inside `BusinessTab`, after Quick Add): monthly target progress with needed-per-day and
+  run-rate; a cash-basis statement from `buildStatement(data, mk)` (revenue by sale type/source →
+  sourcing → shipping → gross → other costs → net); financial-year (Apr–Mar) totals; and "where the
+  business money is" (stock in hand, goods in transit, to receive, to pay; cash+bank shown separately
+  because accounts are shared with personal).
+- `CashbackCard`: `data.cashbacks` rows `{ id, date, site, store, orderUsd, cbUsd, status }` moving
+  pending → confirmed → paid; marking paid asks the ₹ actually received and books it as business income
+  (`Other Business`, linked by `cashbackId`).
+- Deal tab box: several items added to a box (kept in localStorage `deal_box`); weights are summed
+  first and the reshipper's minimum/rounding applied once, reship is shared by weight, and the card
+  shows total card spend, landed, sale, profit and the saving versus shipping each item alone.
