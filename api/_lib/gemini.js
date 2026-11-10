@@ -62,7 +62,7 @@ export async function geminiGenerate(apiKey, primaryModel, body) {
     if (i > 0 && (coolingDown.get(model) || 0) > Date.now()) continue;
     let res = await callOnce(apiKey, model, body);
     // some fallback models reject a thinking budget — retry that model once without it
-    if (!res.ok && res.status === 400 && i > 0 && body.generationConfig && body.generationConfig.thinkingConfig) {
+    if (!res.ok && res.status === 400 && model !== primaryModel && body.generationConfig && body.generationConfig.thinkingConfig) {
       const { thinkingConfig, ...gc } = body.generationConfig;
       res = await callOnce(apiKey, model, { ...body, generationConfig: gc });
     }
