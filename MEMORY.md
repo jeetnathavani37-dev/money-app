@@ -22,6 +22,15 @@ manual forms they mirror.
 
 ## The conversation engine (web app)
 
+**Current design (Nov 2026):** one model call per turn (`think()` in `JamesButton`) sees the whole
+conversation, the real OPEN DUES and orders waiting to land, and re-decides the intent every turn —
+the intent is no longer locked after the first message. `settle_due` is only valid for a party with
+an open due; "X ko diya" with no open due is either `add_due` (receivable) or a `quick_entry`
+expense, and James asks "Udhaar diya ya kharcha tha?" only when the words don't make it clear. A
+failed save is fed back to the model once (`saveError`) so it re-thinks instead of repeating the
+error. Optional fields (`scope`, `note`, `purpose`) are inferred and never block saving. The two
+paragraphs below describe the earlier two-call version and are kept for history.
+
 `JamesButton` is a real back-and-forth, not a form. Turn 1 classifies intent only
 (`startConversation`). Every turn after that — `advanceConversation` — sends Gemini the
 **entire conversation so far** plus `JAMES_FIELD_FLOWS[intent]` (the field list + one-line

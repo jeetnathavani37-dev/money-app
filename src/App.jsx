@@ -1062,7 +1062,16 @@ function VoiceLogButton({ data, persist, registerActivity, setToast, triggerNote
 // flow), a new client sale (sale_order — mirrors QuickActionsBar's "+ SOLD ORDER"), and money
 // that just moved against something ALREADY pending (settle_due — partial or full receivable/
 // payable settlement, which previously had no way to actually move cash into an account).
+const jamesScope = (v) => (v === "business" || v === "personal" ? v : null);
 const JAMES_INTENTS = ["b2b_order", "sale_order", "settle_due", "quick_entry", "cashout", "add_due"];
+const JAMES_INTENT_DESC = {
+  b2b_order: "a NEW incoming order FROM a supplier (e.g. Sourcex/KicksMachine) that will be resold",
+  sale_order: "a NEW sale to a client",
+  settle_due: "money that just arrived from / was paid to someone against an amount ALREADY listed in OPEN DUES below — never use this if that person has no open due",
+  quick_entry: "a plain income, expense or waste — money that moved and is not coming back",
+  cashout: "inventory bought now to resell later (not a named supplier order)",
+  add_due: "a brand-new amount owed to/by someone — including money the user just lent/gave someone that should come back (receivable), or borrowed (payable)",
+};
 
 // Which fields James needs for each intent, and how to describe them to the model. This list
 // IS the conversation — advanceConversation() below feeds it to Gemini every turn alongside
@@ -1090,7 +1099,9 @@ const JAMES_FIELD_FLOWS = {
   quick_entry: [
     { key: "entryType", label: 'one of "income", "expense", "waste" (waste = impulsive/unnecessary spending)' },
     { key: "amount", label: "amount — number" },
-    { key: "entryLabel", label: "category (for expense/waste) or source (for income)" },
+    { key: "entryLabel", label: 'category (for expense/waste) or source (for income). Prefer these exact names when they fit — business income: "Sourcex Payout", "KicksMachine", "Direct Client", "Sold Order", "Other Business"; business expense: "Sourcing/Business", "Shipping/Logistics", "Packaging", "Business Tools/Software"; personal expense: "Food", "Healthy Food", "Gym", "Travel", "Shopping", "Subscriptions", "Rent"; waste: "Drinks", "Smoking", "Alcohol", "Gambling", "Impulse Buy". Otherwise a short sensible label. Infer it — only ask if you truly cannot tell' },
+    { key: "scope", optional: true, label: '"business" or "personal" — infer from context, never ask just for this' },
+    { key: "note", optional: true, label: "short note worth keeping (person, item, reason) — infer from the message, never ask just for this" },
   ],
   cashout: [
     { key: "itemName", label: "item/product name" },
@@ -1100,7 +1111,9 @@ const JAMES_FIELD_FLOWS = {
   add_due: [
     { key: "party", label: "who owes, or who is owed" },
     { key: "amount", label: "amount — number" },
-    { key: "dueType", label: 'one of "receivable" (they owe the user) or "payable" (user owes them)' },
+    { key: "dueType", label: 'one of "receivable" (they owe the user — e.g. the user lent/gave them money to be returned) or "payable" (user owes them)' },
+    { key: "purpose", optional: true, label: '"business" or "personal" — infer, default personal' },
+    { key: "note", optional: true, label: "short note (reason / what it was for) — infer, never ask just for this" },
   ],
 };
 
@@ -1266,7 +1279,7 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
         fundDelta[fd.id] = share;
         fundBalances[fd.id] = (fundBalances[fd.id] || 0) + share;
       });
-      const entry = { id: Date.now(), amount: amt, source: f.entryLabel || "James Entry", note: "", date: today, fundDelta };
+      const entry = { id: Date.now(), amount: amt, source: f.entryLabel || "James Entry", note: (f.note || "").trim(), date: today, fundDelta, ...(jamesScope(f.scope) ? { scope: jamesScope(f.scope) } : {}) };
       let next = { ...data, income: [...data.income, entry], fundBalances };
       if (registerActivity) next = registerActivity(next, 5);
       persist(next);
@@ -1282,13 +1295,16 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
         fundDelta[fd.id] = -share;
         fundBalances[fd.id] = (fundBalances[fd.id] || 0) - share;
       });
-      const entry = { id: Date.now(), amount: total, category: f.entryLabel || "Other", note: "", date: today, unnecessary: isWaste, fine, fundDelta };
+      const entry = { id: Date.now(), amount: total, category: f.entryLabel || "Other", note: (f.note || "").trim(), date: today, unnecessary: isWaste, fine, fundDelta, ...(!isWaste && jamesScope(f.scope) ? { scope: jamesScope(f.scope) } : {}) };
       let next = { ...data, expenses: [...data.expenses, entry], fundBalances };
       if (registerActivity) next = registerActivity(next, 3);
       persist(next);
       if (triggerNoteAnim) triggerNoteAnim(total, "out");
+      return { ok: true, message: isWaste
+        ? `Logged — ${fmt(total)} waste (${f.entryLabel || "Other"}, ${fmt(fine)} fine included).`
+        : `Logged — ${fmt(amt)} ${jamesScope(f.scope) === "business" ? "business " : ""}expense, ${f.entryLabel || "Other"}${f.note ? ` (${f.note})` : ""}.` };
     }
-    return { ok: true, message: "Entry logged." };
+    return { ok: true, message: `Logged — ${fmt(amt)} ${jamesScope(f.scope) === "business" ? "business " : ""}income, ${f.entryLabel || "James Entry"}${f.note ? ` (${f.note})` : ""}.` };
   };
 
   const doSaveCashout = (f) => {
@@ -1312,9 +1328,11 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
     if (!(f.party || "").trim() || !amt || amt <= 0) return { ok: false, message: "Naam aur amount dono chahiye." };
     const kind = f.dueType === "payable" ? "payable" : "receivable";
     const listKey = kind === "receivable" ? "receivables" : "payables";
-    const entry = { id: Date.now(), party: f.party.trim(), amount: amt, purpose: "personal", dueDate: null, note: "", status: "pending", isCOD: false, minAmount: null };
+    const entry = { id: Date.now(), party: f.party.trim(), amount: amt, purpose: jamesScope(f.purpose) || "personal", dueDate: null, note: (f.note || "").trim(), status: "pending", isCOD: false, minAmount: null };
     persist({ ...data, [listKey]: [...data[listKey], entry] });
-    return { ok: true, message: `Added — ${kind} with ${f.party.trim()} for ₹${amt}. Jab move ho, mujhe bata dena.` };
+    return { ok: true, message: kind === "receivable"
+      ? `Added — ${f.party.trim()} ko ${fmt(amt)} wapas dena hai tumhe. Jab aaye, bata dena.`
+      : `Added — tumhe ${f.party.trim()} ko ${fmt(amt)} dena hai. Jab do, bata dena.` };
   };
 
   const SAVE_FNS = {
@@ -1322,41 +1340,81 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
     quick_entry: doSaveQuickEntry, cashout: doSaveCashout, add_due: doSaveAddDue,
   };
 
-  const finalizeSave = (currentIntent, f) => {
-    const result = SAVE_FNS[currentIntent](f);
-    setThread((t) => [...t, { from: "james", text: result.message }]);
-    if (result.ok) {
-      setDone(true);
-      if (setToast) { setToast("⚡ JAMES LOGGED IT"); setTimeout(() => setToast(null), 1800); }
-    }
+  // ---- the conversation engine ----
+  // One model call per turn that sees the WHOLE conversation plus the real open dues, and decides
+  // the intent afresh every turn (so a wrong first guess can be corrected by the user's next line),
+  // what is known, and the single next question. A failed save is fed back to the model once, so
+  // James re-thinks instead of repeating the same error.
+
+  const blankFields = (i) => Object.fromEntries(JAMES_FIELD_FLOWS[i].map((fd) => [fd.key, null]));
+  const missingRequired = (i, f) => JAMES_FIELD_FLOWS[i].filter((fd) => !fd.optional && (f[fd.key] === null || f[fd.key] === undefined || f[fd.key] === ""));
+
+  const buildPrompt = (threadSoFar, currentIntent, currentFields, saveError) => {
+    const openRecv = data.receivables.filter((r) => r.status === "pending").map((r) => `${r.party} owes me ₹${r.amount}`);
+    const openPay = data.payables.filter((r) => r.status === "pending").map((r) => `I owe ${r.party} ₹${r.amount}`);
+    const pendingOrders = data.investments.filter((i) => String(i.status || "").startsWith("pending_landing")).map((i) => i.name).slice(-8);
+    const intents = JAMES_INTENTS.map((i) => `"${i}" — ${JAMES_INTENT_DESC[i]}\n   fields: ${JAMES_FIELD_FLOWS[i].map((fd) => `${fd.key}${fd.optional ? " (optional)" : ""}: ${fd.label}`).join("; ")}`).join("\n");
+    const convoText = threadSoFar.map((m) => `${m.from === "james" ? "James" : "User"}: ${m.text}`).join("\n");
+    return `You are James, the money-ops brain of a small luxury resale business owner in India (he writes short Hinglish). Read the WHOLE conversation and work out what actually happened with his money, like a sharp accountant friend would — then either log it or ask ONE short question.
+
+TODAY: ${todayISO()}
+OPEN DUES (the only things "settle_due" can be used for):
+${[...openRecv, ...openPay].join("\n") || "none"}
+ORDERS WAITING TO LAND: ${pendingOrders.join(", ") || "none"}
+
+INTENTS and the fields each needs:
+${intents}
+
+CURRENT GUESS: intent=${currentIntent || "none yet"}, known fields=${JSON.stringify(currentFields || {})}
+${saveError ? `\nTHE LAST SAVE ATTEMPT FAILED: "${saveError}". Do NOT try the same thing again — pick the intent that actually fits, or ask the user one clarifying question.\n` : ""}
+CONVERSATION:
+${convoText}
+
+RULES:
+- Re-decide the intent every turn from the whole conversation; change it freely if the user's later lines show the first guess was wrong.
+- Amounts: "5k"=5000, "1.5L"/"1.5 lakh"=150000, "2cr"=20000000. Never invent a number he didn't say.
+- "X ko diya / gave X" with NO open due for X is NOT settle_due. It is either money lent that should come back (add_due, dueType "receivable") or money spent (quick_entry expense). If his words make it clear ("udhaar", "lend", "wapas dega", "loan" → receivable; "kharcha", "payment", "salary", "tip", "kaam ka", a shop/service → expense) just use that; otherwise ask exactly: "Udhaar diya (wapas aayega) ya kharcha tha?"
+- "X se aaya / received from X" with no open due for X: income (quick_entry) — or a loan he took (add_due, "payable") only if he says so.
+- If the person HAS an open due, settle_due is right; "party" must be the name as written in OPEN DUES.
+- Infer labels, scope and notes yourself. Ask only for things you genuinely cannot infer, one short question at a time, in his own casual Hinglish. Never re-ask something already answered. Optional fields never block saving.
+- readyToSave = true as soon as every non-optional field of the chosen intent has a real value.
+
+Return ONLY JSON, no other text:
+{"intent": one of ${JSON.stringify(JAMES_INTENTS)}, "fields": {only the chosen intent's field keys, null for unknown}, "nextQuestion": string or null, "readyToSave": boolean}`;
   };
 
-  // ---- the conversation engine — one Gemini call per turn, updating known fields and either
-  // asking the next question or (once everything required is known) saving ----
-
-  const advance = async (currentIntent, currentFields, threadSoFar) => {
+  const think = async (threadSoFar, currentIntent, currentFields, saveError = null, retries = 0) => {
     setLoading(true);
     setError(null);
     try {
-      const flow = JAMES_FIELD_FLOWS[currentIntent];
-      const fieldDescriptions = flow.map((fd) => `- ${fd.key}: ${fd.label}`).join("\n");
-      const shape = JSON.stringify(Object.fromEntries(flow.map((fd) => [fd.key, null])));
-      const convoText = threadSoFar.map((m) => `${m.from === "james" ? "James" : "User"}: ${m.text}`).join("\n");
-      const prompt = `You are James, a blunt, casual, no-fluff money-ops assistant for a small resale business, collecting details for a "${currentIntent}" entry one question at a time.\nFields needed:\n${fieldDescriptions}\nKnown so far: ${JSON.stringify(currentFields)}\nConversation so far:\n${convoText}\nUpdate the known field values using everything said in the conversation — keep every previously known value unless the user corrected it. Return ONLY JSON, no other text, in this exact shape:\n{"fields": ${shape}, "nextQuestion": string|null, "readyToSave": boolean}\nRules:\n- readyToSave = true only once EVERY field above has a real value.\n- nextQuestion = the single next short question to ask, matching the user's own casual tone (Hindi/English mix is fine, keep it short, no fluff) — null when readyToSave is true.\n- Never re-ask something already known. Never invent a number the user didn't state.`;
-      const raw = await fetchAIText(prompt);
+      const raw = await fetchAIText(buildPrompt(threadSoFar, currentIntent, currentFields, saveError));
       const match = raw.match(/\{[\s\S]*\}/);
       const obj = JSON.parse(match ? match[0] : raw);
-      const updatedFields = { ...currentFields, ...obj.fields };
+      const chosen = JAMES_INTENTS.includes(obj.intent) ? obj.intent : (currentIntent || "quick_entry");
+      const base = chosen === currentIntent ? { ...blankFields(chosen), ...(currentFields || {}) } : blankFields(chosen);
+      const incoming = Object.fromEntries(Object.entries(obj.fields || {}).filter(([k, v]) => k in base && v !== null && v !== undefined && v !== ""));
+      const updatedFields = { ...base, ...incoming };
+      setIntent(chosen);
       setFields(updatedFields);
-      if (obj.readyToSave) {
-        finalizeSave(currentIntent, updatedFields);
-      } else if (obj.nextQuestion) {
-        setThread((t) => [...t, { from: "james", text: obj.nextQuestion }]);
+      const missing = missingRequired(chosen, updatedFields);
+      if (missing.length === 0 && (obj.readyToSave || !obj.nextQuestion)) {
+        const result = SAVE_FNS[chosen](updatedFields);
+        if (result.ok) {
+          setThread((t) => [...t, { from: "james", text: result.message }]);
+          setDone(true);
+          if (setToast) { setToast("⚡ JAMES LOGGED IT"); setTimeout(() => setToast(null), 1800); }
+        } else if (retries < 1) {
+          // let the model re-think with the failure reason instead of parroting it back
+          await think(threadSoFar, chosen, updatedFields, result.message, retries + 1);
+          return;
+        } else {
+          setThread((t) => [...t, { from: "james", text: result.message }]);
+        }
       } else {
-        setThread((t) => [...t, { from: "james", text: "Thoda aur detail do — jo bhi baaki hai." }]);
+        setThread((t) => [...t, { from: "james", text: obj.nextQuestion || `${missing[0] ? missing[0].label.split(" — ")[0] : "Thoda aur detail"} batao?` }]);
       }
     } catch (err) {
-      setError("James got confused there — try answering again.");
+      setError("James got confused there — try saying it again.");
     } finally {
       setLoading(false);
     }
@@ -1364,26 +1422,14 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
 
   const startConversation = async () => {
     const text = typedText.trim();
-    if (!text) return;
-    setLoading(true);
-    setError(null);
+    if (!text || loading) return;
     setDone(false);
     const initialThread = [{ from: "user", text }];
     setThread(initialThread);
     setTypedText("");
-    try {
-      const prompt = `Classify this message into ONE intent for James, a small resale business's money-ops assistant.\nText: "${text}"\nIntents: "b2b_order" (a new incoming order FROM a supplier), "sale_order" (a NEW sale to a client), "settle_due" (money that just arrived/was paid against something ALREADY pending), "quick_entry" (plain income/expense/waste, nothing else attached), "cashout" (inventory bought now to resell later, not a named order), "add_due" (a brand-new amount owed to/by someone, nothing paid yet).\nReturn ONLY JSON: {"intent": "b2b_order"|"sale_order"|"settle_due"|"quick_entry"|"cashout"|"add_due"}`;
-      const raw = await fetchAIText(prompt);
-      const match = raw.match(/\{[\s\S]*\}/);
-      const obj = JSON.parse(match ? match[0] : raw);
-      const chosenIntent = JAMES_INTENTS.includes(obj.intent) ? obj.intent : "b2b_order";
-      setIntent(chosenIntent);
-      const initialFields = Object.fromEntries(JAMES_FIELD_FLOWS[chosenIntent].map((fd) => [fd.key, null]));
-      await advance(chosenIntent, initialFields, initialThread);
-    } catch (err) {
-      setError("James couldn't parse that — try again.");
-      setLoading(false);
-    }
+    setIntent(null);
+    setFields(null);
+    await think(initialThread, null, null);
   };
 
   const submitReply = () => {
@@ -1392,7 +1438,7 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
     const updatedThread = [...thread, { from: "user", text: reply }];
     setThread(updatedThread);
     setChatInput("");
-    advance(intent, fields, updatedThread);
+    think(updatedThread, intent, fields);
   };
 
   return (
@@ -1408,7 +1454,7 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
               <button style={S.calcCloseBtn} onClick={() => setOpen(false)}><X size={16} color={T.ivory} /></button>
             </div>
 
-            {!intent && (
+            {thread.length === 0 && (
               <>
                 <div style={{ fontSize: 9.5, color: T.muted, marginBottom: 6 }}>TYPE ANYTHING — ORDERS, SALES, EXPENSES, DUES, JAMES ASKS WHAT'S MISSING</div>
                 <div style={S.formRow}>
@@ -1427,7 +1473,7 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
               </>
             )}
 
-            {intent && (
+            {thread.length > 0 && (
               <div style={{ marginTop: 10 }}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 280, overflowY: "auto", marginBottom: 10 }}>
                   {thread.map((m, i) => (
