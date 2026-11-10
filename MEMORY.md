@@ -200,3 +200,19 @@ and the Telegram/WhatsApp `log_sale_order` tool still use the earlier profit-bas
 
 Tabs per view (`NAV_BY_MODE`): PERSONAL and BUSINESS each have their own tab set; ALL shows every tab.
 Sales are business-only (`SCOPED_KEYS.sales`).
+
+## James never saves silently, and remembers (Nov 2026)
+
+- **Confirm before save:** once every required field is known, `think()` sets `pending` and the UI shows
+  a "YE SAVE KARU?" card built by `describe()` (deterministic, not model text) — nothing is written until
+  the user taps confirm. Fields the model filled in without being told come back in `assumed` and are
+  shown on the card. Typing instead of confirming is treated as a correction.
+- **No assumed material facts:** the prompt forbids guessing the kind of transaction, amount, party,
+  received-vs-due, udhaar-vs-kharcha, or business-vs-personal; it must ask one short question instead.
+- **One brain, shared with the bots:** durable facts the user teaches go to `businessMemory` (the same
+  notes the Telegram/WhatsApp agent reads and writes via `remember`). Every James save also appends to
+  `jamesLog` (`{ date, said, did, intent }`, last 200), written in the same save via `jPersist`.
+- **Context each turn (`buildBrain`)**: learned notes, people in the books, habits (label, scope, usual
+  amount), recent James log, open sales/dues, monthly totals, accounts, funds, last 40 entries.
+- **AI quota:** `api/_lib/gemini.js` falls back to other Gemini models when the main model's free-tier
+  quota (20 requests/day) is exhausted. James shows a RETRY button when a call fails; nothing is saved.

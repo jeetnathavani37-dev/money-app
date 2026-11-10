@@ -7,6 +7,7 @@
 // against the REST API, matching api/ai-proxy.js's style.
 
 import { loadState, saveState } from "./supabase.js";
+import { geminiGenerate } from "./gemini.js";
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 const MAX_TURNS = 5; // hard cap on tool-call round trips per incoming message
@@ -32,7 +33,7 @@ CORE ACTIONS — always via tools, never by guessing:
    - Once logged, tell the user the potential profit (expected selling price minus estimated landed cost) plainly.
 6. CONFIRM A B2B ORDER HAS LANDED (e.g. "sourcex order land ho gaya, reship 800 tha") — confirm_order_landed tool. Ask for the actual reship cost if not given. This logs whatever expense(s) were deferred and finalizes the real landed cost — tell the user the actual profit (expected selling price minus actual landed cost), and how it compares to what was estimated at order time.
 7. REMEMBER a durable business pattern worth not re-explaining next time (a typical reship cost for a supplier, a recurring margin, a phrasing habit) — remember tool. Use this sparingly, only for things genuinely worth carrying forward, especially right after confirm_order_landed reveals a real number worth keeping.
-8. LOG A NEW CLIENT SALE (e.g. "sold to Rahul for 20k, 2k profit, got 5k now") — log_sale_order tool. The profit books as income immediately regardless of what's actually been collected. Any amount NOT yet received becomes a receivable — it does not count as cash in hand until settle_due confirms it later.
+8. LOG A NEW SALE (e.g. "rahul ko 12k ka bag becha, 5k aaya, baaki 15 din me") — log_sale_order tool. It creates a sale in the Sales tracker: what was received now is booked as business income, the rest stays open on the sale with its due date. You need the buyer, the sale value and how much was received right now — if he did not say how much has come in so far, ASK; never assume 0 or full. When money later arrives from a buyer with an open sale, use record_sale_payment (not settle_due, not log_entry).
 9. SETTLE something ALREADY pending — money that just arrived or was just paid, not a new order or sale (e.g. "sourcex se 15k agya", "rahul ne baaki 15k de diya", "supplier ko 3k pay kiya") — settle_due tool. This is what actually moves money for a receivable/payable — a sale's "money due" or a B2B order's cost sit inert until this fires. Matches by party name; supports partial settlement (whatever's left stays pending).
 10. LOG INVENTORY BOUGHT NOW TO RESELL LATER, not part of a named supplier-order flow (e.g. "bought 5 shirts for 2000, will sell for 3500") — log_cashout tool.
 11. RECORD A BRAND-NEW AMOUNT OWED, nothing paid yet — someone owes the user, or the user owes someone (e.g. "Rahul owes me 5000", "I owe the supplier 3000") — add_due tool. This only records it; settle_due is what moves money later.
@@ -41,6 +42,10 @@ CORE ACTIONS — always via tools, never by guessing:
    - "X ko diya / gave X" with no open due: if the words make it clear ("udhaar", "lend", "wapas dega", "loan" → add_due as a receivable; "kharcha", "payment", "salary", "kaam ka", a shop/service → log_entry expense) just do that; otherwise ask exactly one short question: "Udhaar diya (wapas aayega) ya kharcha tha?"
    - "X se aaya / received from X" with no open due: log_entry income, unless the user says it is a loan they took (add_due as a payable).
    - Amount shorthand: "5k"=5000, "1.5L"/"1.5 lakh"=150000. Never invent a number. Infer category, scope and a short note yourself; ask only for what you genuinely cannot infer, one short question at a time, in the user's own Hinglish.
+13. NEVER ASSUME A MATERIAL FACT — this matters more than speed. Material facts are: what kind of transaction it is, the amount, who it is with, how much was actually received/paid versus still due, whether money given will come back (udhaar) or is spent, and business vs personal when the label alone does not settle it. A material fact is known only if he said it in this chat, or it is in the LEARNED BUSINESS NOTES, or get_financial_data shows the same person/payment was logged that way before. If it is not known, do NOT call a logging tool — ask ONE short question in his Hinglish. A wrong entry is far worse than one extra question. You may fill in non-material details (label wording, a short note) yourself, and when you do, say what you filled in when you confirm.
+14. AFTER EVERY LOG, confirm in one line exactly what was written (type, amount, who, label, business/personal, what is still due) so he can correct it immediately; if he says it is wrong, undo_last_entry and redo it.
+15. LEARN: whenever he clarifies something reusable (who a person is, what a recurring payment is for, how he wants something categorised, a usual payment term), call remember with one short line so you never have to ask again. Check the LEARNED BUSINESS NOTES and open_sales/open_dues before asking anything.
+16. If one message has several separate transactions, log them one at a time and confirm each.
 
 HOW TO APPLY THAT CRAFT to what get_financial_data returns:
 - Landed cost discipline: real cost of goods = item price + international shipping + customs duty + payment fees. If an expense category is quietly eating margin, name it and the number.
@@ -143,17 +148,31 @@ const TOOLS = [
   },
   {
     name: "log_sale_order",
-    description: "Log a NEW sale to a client. The profit books as income immediately; any amount not yet received becomes a receivable that only affects the account once settle_due confirms it later.",
+    description: "Log a NEW sale to a buyer in the Sales tracker. Whatever was received right now is booked as business income; the rest stays as an open balance on the sale (with its due date) until record_sale_payment is called.",
     input_schema: {
       type: "object",
       properties: {
         client_name: { type: "string", description: "buyer/client name" },
-        sale_value: { type: "number", description: "total sale value, if mentioned" },
-        expected_profit: { type: "number", description: "profit from this sale" },
-        money_received_now: { type: "number", description: "cash already in hand right now, if any" },
-        money_due: { type: "number", description: "amount not yet received, if any — becomes a receivable" },
+        channel: { type: "string", enum: ["B2B", "Reseller", "B2C", "Client"], description: "B2B = a business/platform buyer (Sourcex, KicksMachine); Reseller = resells to their own customers; B2C = walk-in/Instagram/retail customer; Client = a regular named concierge client" },
+        sale_value: { type: "number", description: "total sale value" },
+        money_received_now: { type: "number", description: "cash actually received right now — 0 if nothing yet. Must come from the user, never assumed" },
+        item_name: { type: "string", description: "what was sold, optional" },
+        due_date: { type: "string", description: "YYYY-MM-DD the remaining money should arrive by, optional — work it out from phrases like '15 din me'" },
+        cost_price: { type: "number", description: "what the item cost, only if the user says it" },
       },
-      required: ["client_name", "expected_profit"],
+      required: ["client_name", "sale_value", "money_received_now"],
+    },
+  },
+  {
+    name: "record_sale_payment",
+    description: "Record money that just arrived from a buyer who has an OPEN sale (see open_sales in get_financial_data). Applies it to that buyer's oldest open sale first and books it as business income.",
+    input_schema: {
+      type: "object",
+      properties: {
+        party: { type: "string", description: "the buyer's name as it appears in open_sales" },
+        amount: { type: "number", description: "amount that just arrived" },
+      },
+      required: ["party", "amount"],
     },
   },
   {
@@ -226,29 +245,22 @@ const GEMINI_TOOLS = [
 ];
 
 async function callGemini({ apiKey, model, systemInstruction, contents, tools, thinkingBudget, maxOutputTokens }) {
-  const upstream = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents,
-        systemInstruction: { parts: [{ text: systemInstruction }] },
-        tools,
-        generationConfig: {
-          maxOutputTokens,
-          ...(thinkingBudget !== undefined ? { thinkingConfig: { thinkingBudget } } : {}),
-        },
-      }),
-    }
-  );
-  const json = await upstream.json().catch(() => null);
-  if (!upstream.ok) {
-    const err = new Error(json?.error?.message || `Gemini API error ${upstream.status}`);
-    err.status = upstream.status;
+  // goes through geminiGenerate so an exhausted daily quota on the main model falls back to another one
+  const res = await geminiGenerate(apiKey, model, {
+    contents,
+    systemInstruction: { parts: [{ text: systemInstruction }] },
+    tools,
+    generationConfig: {
+      maxOutputTokens,
+      ...(thinkingBudget !== undefined ? { thinkingConfig: { thinkingBudget } } : {}),
+    },
+  });
+  if (!res.ok) {
+    const err = new Error(res.json?.error?.message || `Gemini API error ${res.status}`);
+    err.status = res.status;
     throw err;
   }
-  return json;
+  return res.json;
 }
 
 function todayISO() {
@@ -416,30 +428,66 @@ function computeConfirmOrderLanded(data, input) {
 // Mirrors src/App.jsx's JamesButton.saveSaleOrder — profit books as income immediately;
 // whatever isn't received yet becomes a receivable (fromSoldOrder: true) that only moves money
 // once settle_due below actually confirms it.
-function computeLogSaleOrder(data, input) {
-  const profit = Number(input.expected_profit);
-  if (!profit || profit <= 0) return null;
-  const saleValue = Number(input.sale_value) || 0;
-  const received = Number(input.money_received_now) || 0;
-  const due = Number(input.money_due) || 0;
-  const buyer = (input.client_name || "buyer").trim() || "buyer";
-  const today = todayISO();
-  const profitPct = saleValue > 0 ? Math.round((profit / saleValue) * 1000) / 10 : null;
+// ---- Sales tracker (mirrors createSale / applySalePayment in src/App.jsx — keep the two in step) ----
+const SALE_TYPES = ["B2B", "Reseller", "B2C", "Client"];
+const saleReceived = (s) => (s.payments || []).reduce((a, p) => a + (p.amount || 0), 0);
+const saleBalance = (s) => Math.max(0, (s.saleValue || 0) - saleReceived(s));
+function saleIncomeSource(s) {
+  const p = (s.party || "").toLowerCase();
+  if (/sourcex/.test(p)) return "Sourcex Payout";
+  if (/kicks ?machine/.test(p)) return "KicksMachine";
+  return s.channel === "B2B" ? "Other Business" : "Direct Client";
+}
+// A payment is real money in: a business income entry linked by saleId, plus a payment row on the sale.
+function applySalePayment(data, saleId, amt, date) {
+  const sale = (data.sales || []).find((s) => s.id === saleId);
+  if (!sale || !amt || amt <= 0) return data;
+  const { fundDelta, fundBalances } = applyFundDelta(data, amt, 1);
+  const incomeId = Date.now() + Math.floor(Math.random() * 1000);
+  const income = { id: incomeId, amount: amt, source: saleIncomeSource(sale), note: `${sale.party}${sale.item ? ` — ${sale.item}` : ""} (sale payment)`, date, fundDelta, scope: "business", saleId };
+  const payment = { id: incomeId + 1, date, amount: amt, incomeId };
+  return { ...data, income: [...data.income, income], fundBalances, sales: data.sales.map((s) => (s.id === saleId ? { ...s, payments: [...(s.payments || []), payment] } : s)) };
+}
 
-  const { fundDelta, fundBalances } = applyFundDelta(data, profit, 1);
-  const income = {
-    id: Date.now(), amount: profit, source: "Sold Order",
-    note: `${buyer} — sale ₹${saleValue || 0}, received ₹${received || 0}${profitPct !== null ? ` (${profitPct}% margin)` : ""}`,
-    date: today, fundDelta, customerName: buyer, saleValue: saleValue || null,
+function computeLogSaleOrder(data, input) {
+  const value = Number(input.sale_value);
+  const buyer = (input.client_name || "").trim();
+  if (!buyer || !value || value <= 0) return null;
+  const got = Math.min(value, Math.max(0, Number(input.money_received_now) || 0));
+  const today = todayISO();
+  const dueDate = typeof input.due_date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(input.due_date) ? input.due_date : null;
+  const sale = {
+    id: Date.now(), date: today, party: buyer, channel: SALE_TYPES.includes(input.channel) ? input.channel : "Client",
+    item: (input.item_name || "").trim(), saleValue: value, cost: Number(input.cost_price) || null, dueDate, payments: [], note: "",
   };
-  let nextData = { ...data, income: [...data.income, income], fundBalances };
-  let meta = `Logged ₹${profit} profit (${buyer}).`;
-  if (due > 0) {
-    const receivable = { id: Date.now() + 1, party: buyer, amount: due, dueDate: null, note: `Sold order — sale ₹${saleValue || 0}`, status: "pending", fromSoldOrder: true };
-    nextData = { ...nextData, receivables: [...nextData.receivables, receivable] };
-    meta += ` ₹${due} due later, moved to receivables — settle_due when it's actually paid.`;
-  }
+  let nextData = { ...data, sales: [...(data.sales || []), sale] };
+  if (got > 0) nextData = applySalePayment(nextData, sale.id, got, today);
+  const due = value - got;
+  const meta = due > 0
+    ? `Sale logged — ${buyer} (${sale.channel}), ₹${value}. ₹${got} received, ₹${due} still due${dueDate ? ` by ${dueDate}` : " (no due date given)"}.`
+    : `Sale logged — ${buyer} (${sale.channel}), ₹${value} fully received.`;
   return { data: nextData, meta };
+}
+
+function computeSalePayment(data, input) {
+  const q = (input.party || "").trim().toLowerCase();
+  const amt = Number(input.amount);
+  if (!q || !amt || amt <= 0) return { error: "Need both the buyer's name and the amount." };
+  const open = (data.sales || []).filter((s) => saleBalance(s) > 0 && s.party && (s.party.toLowerCase().includes(q) || q.includes(s.party.toLowerCase())))
+    .sort((x, y) => (x.dueDate || x.date).localeCompare(y.dueDate || y.date));
+  if (open.length === 0) return { error: `No open sale found for "${input.party}". It may be a plain income, or a due — check get_financial_data, or ask the user.` };
+  const today = todayISO();
+  const owedBefore = open.reduce((a, s) => a + saleBalance(s), 0);
+  let left = amt, nextData = data;
+  for (const s of open) {
+    if (left <= 0) break;
+    const pay = Math.min(left, saleBalance(s));
+    nextData = applySalePayment(nextData, s.id, pay, today);
+    left -= pay;
+  }
+  const applied = amt - left;
+  const stillOwed = owedBefore - applied;
+  return { data: nextData, meta: `Applied ₹${applied} from ${open[0].party}. ${stillOwed > 0 ? `₹${stillOwed} still due.` : "Fully settled."}${left > 0 ? ` ₹${left} was extra and NOT applied to any sale — ask the user what it was for.` : ""}` };
 }
 
 // The counterpart to log_b2b_order/log_sale_order — those two only ever create a *pending*
@@ -653,6 +701,14 @@ function computeFinancialData(data, args = {}) {
       fund_balances: data.fundBalances || {},
     },
     trend: computeTrends(data),
+    open_sales: (data.sales || []).filter((x) => saleBalance(x) > 0).map((x) => ({
+      party: x.party, channel: x.channel, item: x.item || "", sale_value: x.saleValue, received: saleReceived(x), balance: saleBalance(x),
+      sold_on: x.date, due_date: x.dueDate, days_overdue: x.dueDate && x.dueDate < todayISO() ? Math.round((new Date(todayISO()) - new Date(x.dueDate)) / 86400000) : 0,
+    })),
+    open_dues: {
+      they_owe_me: (data.receivables || []).filter((r) => r.status === "pending").map((r) => ({ party: r.party, amount: r.amount, due_date: r.dueDate || null })),
+      i_owe: (data.payables || []).filter((r) => r.status === "pending").map((r) => ({ party: r.party, amount: r.amount, due_date: r.dueDate || null })),
+    },
     receivables_aging: computeAging(data.receivables, "received"),
     payables_aging: computeAging(data.payables, "paid"),
   };
@@ -823,7 +879,24 @@ export async function runMoneyAgent({ channel, chatKey, state, userMessage }) {
         } else if (fc.name === "log_sale_order") {
           const outcome = computeLogSaleOrder(data, args);
           if (!outcome) {
-            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Invalid profit amount — couldn't log that sale." } } });
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Need the buyer's name and a sale value — couldn't log that sale." } } });
+            continue;
+          }
+          const saved = await saveState(outcome.data, updatedAt);
+          if (saved.ok) {
+            data = outcome.data;
+            updatedAt = saved.updatedAt;
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { result: outcome.meta } } });
+          } else {
+            const fresh = await loadState();
+            data = fresh.data;
+            updatedAt = fresh.updatedAt;
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: "Save conflicted with another concurrent write — state reloaded, please retry." } } });
+          }
+        } else if (fc.name === "record_sale_payment") {
+          const outcome = computeSalePayment(data, args);
+          if (outcome.error) {
+            functionResponseParts.push({ functionResponse: { name: fc.name, response: { error: outcome.error } } });
             continue;
           }
           const saved = await saveState(outcome.data, updatedAt);

@@ -4,6 +4,8 @@
 // generateContent format, so src/App.jsx needed no changes when we switched
 // providers — free tier, unlike Anthropic's pay-as-you-go billing.
 
+import { geminiGenerate } from "./_lib/gemini.js";
+
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 
 function toGeminiContents(messages) {
@@ -43,19 +45,11 @@ export default async function handler(req, res) {
       ...(wantsWebSearch(body.tools) ? { tools: [{ google_search: {} }] } : {}),
     };
 
-    const upstream = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(geminiBody),
-      }
-    );
+    const result = await geminiGenerate(apiKey, GEMINI_MODEL, geminiBody);
+    const upstreamJson = result.json;
 
-    const upstreamJson = await upstream.json().catch(() => null);
-
-    if (!upstream.ok) {
-      return res.status(upstream.status).json({ error: { message: upstreamJson?.error?.message || `Gemini API error ${upstream.status}` } });
+    if (!result.ok) {
+      return res.status(result.status).json({ error: { message: upstreamJson?.error?.message || `Gemini API error ${result.status}` } });
     }
 
     const candidate = upstreamJson?.candidates?.[0];
@@ -68,7 +62,7 @@ export default async function handler(req, res) {
 
     // Reshaped into the Claude-Messages-style body the frontend already parses
     // (json.content.filter(c => c.type === "text")) — see src/App.jsx.
-    return res.status(200).json({ content: [{ type: "text", text }] });
+    return res.status(200).json({ content: [{ type: "text", text }], model: result.model });
   } catch (err) {
     return res.status(500).json({ error: { message: err.message || "unknown error" } });
   }

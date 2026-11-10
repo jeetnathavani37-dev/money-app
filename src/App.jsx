@@ -1142,10 +1142,16 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
   const [intent, setIntent] = useState(null);
   const [fields, setFields] = useState(null);
   const [done, setDone] = useState(false);
+  const [pending, setPending] = useState(null); // { intent, fields, assumed, learn, said } — waiting for the confirm tap
+  const [showLog, setShowLog] = useState(false);
+  // every James save goes through jPersist so the log line and anything learned are written in the same save
+  const decorateRef = useRef(null);
+  const lastCallRef = useRef(null);
+  const jPersist = (next) => persist(decorateRef.current ? decorateRef.current(next) : next);
 
   const resetAll = () => {
     setOpen(false); setTypedText(""); setChatInput(""); setThread([]);
-    setIntent(null); setFields(null); setDone(false); setError(null); setLoading(false);
+    setIntent(null); setFields(null); setDone(false); setError(null); setLoading(false); setPending(null); setShowLog(false);
   };
 
   // ---- save logic, one per intent — each mirrors an existing manual flow's exact behavior ----
@@ -1183,7 +1189,7 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
       if (triggerNoteAnim) triggerNoteAnim(costing, "out");
     }
     if (registerActivity) next = registerActivity(next, 5);
-    persist(next);
+    jPersist(next);
     return { ok: true, message: prepaid
       ? `Done — ₹${costing} costing logged, order pending landing. Potential profit ₹${Math.round(investment.expectedProfit)}.`
       : `Done — order logged, nothing paid yet. Potential profit ₹${Math.round(investment.expectedProfit)}.` };
@@ -1201,7 +1207,7 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
     const { next: withSale, sale } = createSale(data, { party: buyer, channel: f.channel, item: f.itemName, saleValue: value, cost: parseFloat(f.costPrice) || null, dueDate });
     let next = got > 0 ? applySalePayment(withSale, sale.id, got, todayISO(), "none") : withSale;
     if (registerActivity) next = registerActivity(next, 5);
-    persist(next);
+    jPersist(next);
     if (got > 0 && triggerNoteAnim) triggerNoteAnim(got, "in");
     const due = value - got;
     return { ok: true, message: due > 0
@@ -1228,7 +1234,7 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
     }
     const applied = amt - left;
     if (registerActivity) next = registerActivity(next, 5);
-    persist(next);
+    jPersist(next);
     if (triggerNoteAnim) triggerNoteAnim(applied, "in");
     const stillOwed = open.reduce((a, s) => a + saleBalance(s), 0) - applied;
     return { ok: true, message: `${open[0].party} se ${fmt(applied)} laga diya.${stillOwed > 0 ? ` Abhi ${fmt(stillOwed)} baaki hai.` : " Sab settle."}${left > 0 ? ` ${fmt(left)} extra tha — wo kisi sale me nahi laga, alag se batao kis cheez ka tha.` : ""}` };
@@ -1274,7 +1280,7 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
       if (triggerNoteAnim) triggerNoteAnim(amt, "out");
     }
     if (registerActivity) next = registerActivity(next, 3);
-    persist(next);
+    jPersist(next);
     return { ok: true, message: remaining <= 0
       ? `Settled — ${kind} with ${entry.party} closed.`
       : `Partial settlement — ₹${remaining} abhi bhi ${kind === "receivable" ? "due hai unse" : "owe karte ho unhe"}.` };
@@ -1296,7 +1302,7 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
       const entry = { id: Date.now(), amount: amt, source: f.entryLabel || "James Entry", note: (f.note || "").trim(), date: today, fundDelta, ...(jamesScope(f.scope) ? { scope: jamesScope(f.scope) } : {}) };
       let next = { ...data, income: [...data.income, entry], fundBalances };
       if (registerActivity) next = registerActivity(next, 5);
-      persist(next);
+      jPersist(next);
       if (triggerNoteAnim) triggerNoteAnim(amt, "in");
     } else {
       const isWaste = entryType === "waste";
@@ -1312,7 +1318,7 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
       const entry = { id: Date.now(), amount: total, category: f.entryLabel || "Other", note: (f.note || "").trim(), date: today, unnecessary: isWaste, fine, fundDelta, ...(!isWaste && jamesScope(f.scope) ? { scope: jamesScope(f.scope) } : {}) };
       let next = { ...data, expenses: [...data.expenses, entry], fundBalances };
       if (registerActivity) next = registerActivity(next, 3);
-      persist(next);
+      jPersist(next);
       if (triggerNoteAnim) triggerNoteAnim(total, "out");
       return { ok: true, message: isWaste
         ? `Logged — ${fmt(total)} waste (${f.entryLabel || "Other"}, ${fmt(fine)} fine included).`
@@ -1333,7 +1339,7 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
       itemName: f.itemName || null, qty: null,
       source: "inventory_cashout", account: null, investmentType: "Inventory Stock", status: "in_stock",
     };
-    persist({ ...data, investments: [...data.investments, investment] });
+    jPersist({ ...data, investments: [...data.investments, investment] });
     return { ok: true, message: `Logged to investments — ~₹${Math.round(sellingPrice - costing)} expected profit.` };
   };
 
@@ -1343,7 +1349,7 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
     const kind = f.dueType === "payable" ? "payable" : "receivable";
     const listKey = kind === "receivable" ? "receivables" : "payables";
     const entry = { id: Date.now(), party: f.party.trim(), amount: amt, purpose: jamesScope(f.purpose) || "personal", dueDate: null, note: (f.note || "").trim(), status: "pending", isCOD: false, minAmount: null };
-    persist({ ...data, [listKey]: [...data[listKey], entry] });
+    jPersist({ ...data, [listKey]: [...data[listKey], entry] });
     return { ok: true, message: kind === "receivable"
       ? `Added — ${f.party.trim()} ko ${fmt(amt)} wapas dena hai tumhe. Jab aaye, bata dena.`
       : `Added — tumhe ${f.party.trim()} ko ${fmt(amt)} dena hai. Jab do, bata dena.` };
@@ -1355,62 +1361,143 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
   };
 
   // ---- the conversation engine ----
-  // One model call per turn that sees the WHOLE conversation plus the real open dues, and decides
-  // the intent afresh every turn (so a wrong first guess can be corrected by the user's next line),
-  // what is known, and the single next question. A failed save is fed back to the model once, so
-  // James re-thinks instead of repeating the same error.
+  // One model call per turn that sees the WHOLE conversation, the real books and what James has
+  // learned before. It never saves on its own: once everything is known it shows exactly what it is
+  // about to write and waits for one tap. Anything material it was not told, it asks.
 
   const blankFields = (i) => Object.fromEntries(JAMES_FIELD_FLOWS[i].map((fd) => [fd.key, null]));
   const missingRequired = (i, f) => JAMES_FIELD_FLOWS[i].filter((fd) => !fd.optional && (f[fd.key] === null || f[fd.key] === undefined || f[fd.key] === ""));
+  const num = (v) => parseFloat(v) || 0;
+
+  // What will be written, in plain words — built locally (not by the model) so the confirmation
+  // always matches what the save function actually does.
+  const describe = (i, f) => {
+    if (i === "sale_order") {
+      const v = num(f.saleValue), got = Math.min(v, num(f.moneyReceivedNow));
+      return `SALE · ${f.clientName} (${SALE_TYPES.includes(f.channel) ? f.channel : "Client"})${f.itemName ? ` · ${f.itemName}` : ""}\n${fmt(v)} ki sale · ${fmt(got)} aaya · ${fmt(v - got)} baaki${f.dueDate ? ` · ${fmtDateShort(f.dueDate)} tak` : v - got > 0 ? " · due date nahi" : ""}${f.costPrice ? `\ncost ${fmt(num(f.costPrice))}` : ""}`;
+    }
+    if (i === "sale_payment") return `PAYMENT AAYA · ${f.party} se ${fmt(num(f.amount))}\nuski open sale me lagega`;
+    if (i === "settle_due") return `DUE SETTLE · ${f.party} · ${fmt(num(f.amount))}`;
+    if (i === "quick_entry") {
+      const t = f.entryType === "waste" ? "WASTE" : f.entryType === "expense" ? "EXPENSE" : "INCOME";
+      return `${t} · ${fmt(num(f.amount))} · ${f.entryLabel || "Other"}${jamesScope(f.scope) ? ` · ${f.scope.toUpperCase()}` : ""}${f.note ? `\n${f.note}` : ""}${f.entryType === "waste" ? "\n(waste par fine lagega)" : ""}`;
+    }
+    if (i === "add_due") return f.dueType === "payable"
+      ? `NAYA DUE · tumhe ${f.party} ko ${fmt(num(f.amount))} dena hai${f.note ? `\n${f.note}` : ""}`
+      : `NAYA DUE · ${f.party} se ${fmt(num(f.amount))} wapas lena hai${f.note ? `\n${f.note}` : ""}`;
+    if (i === "b2b_order") {
+      const prepaid = f.prepaid === true || f.prepaid === "true" || f.prepaid === "yes";
+      return `B2B ORDER · ${f.supplier}\ncosting ${fmt(num(f.costing))} (${prepaid ? "paid" : "abhi nahi diya"}) · reship ~${fmt(num(f.reshipEstimate))} · bechna ${fmt(num(f.expectedSellingPrice))}`;
+    }
+    if (i === "cashout") return `STOCK KHARIDA · ${f.itemName}\ncost ${fmt(num(f.costing))} · bechna ${fmt(num(f.expectedSellingPrice))}`;
+    return i;
+  };
+
+  // Everything James knows going in: learned notes, people, habits, recent entries.
+  const buildBrain = () => {
+    const today = todayISO();
+    const people = {};
+    const touch = (name) => { const k = String(name || "").trim(); if (!k) return null; people[k] = people[k] || []; return people[k]; };
+    (data.sales || []).forEach((x) => { const p = touch(x.party); if (p) p.push(`buyer [${x.channel}] sale ₹${x.saleValue}${saleBalance(x) > 0 ? `, ₹${saleBalance(x)} still due` : ", paid"}`); });
+    data.receivables.forEach((r) => { const p = touch(r.party); if (p) p.push(`${r.status === "pending" ? "owes me" : "paid me back"} ₹${r.amount}${r.note ? ` (${r.note})` : ""}`); });
+    data.payables.forEach((r) => { const p = touch(r.party); if (p) p.push(`${r.status === "pending" ? "I owe" : "I paid"} ₹${r.amount}${r.note ? ` (${r.note})` : ""}`); });
+    const peopleLines = Object.entries(people).slice(-40).map(([k, v]) => `${k}: ${v.slice(-3).join("; ")}`);
+
+    const habits = {};
+    [...data.expenses.slice(-120).map((e) => ({ l: e.category, a: e.amount, s: entryClass(e, "expense"), k: "expense" })), ...data.income.slice(-120).map((e) => ({ l: e.source, a: e.amount, s: entryClass(e, "income"), k: "income" }))]
+      .forEach((x) => { const key = `${x.k}|${x.l}`; habits[key] = habits[key] || { n: 0, sum: 0, s: x.s }; habits[key].n += 1; habits[key].sum += x.a; });
+    const habitLines = Object.entries(habits).sort((a, b) => b[1].n - a[1].n).slice(0, 14).map(([k, v]) => `${k.replace("|", " ")} (${v.s}) ×${v.n}, usually ~₹${Math.round(v.sum / v.n)}`);
+
+    const recent = [...data.income.map((e) => ({ ...e, _t: "+", _l: e.source, _s: entryClass(e, "income") })), ...data.expenses.map((e) => ({ ...e, _t: "-", _l: e.category, _s: entryClass(e, "expense") }))]
+      .sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).slice(0, 40)
+      .map((e) => `${e.date} ${e._t}₹${e.amount} ${e._l} [${e._s}]${e.note ? ` — ${e.note}` : ""}`);
+
+    const months = [0, 1, 2, 3].map((d) => shiftMonthKey(monthKey(today), -d));
+    const monthLines = months.map((m) => {
+      const s = (arr, kind, cls) => arr.filter((e) => monthKey(e.date) === m && entryClass(e, kind) === cls).reduce((a, e) => a + e.amount, 0);
+      const bi = s(data.income, "income", "business"), be = s(data.expenses, "expense", "business");
+      return `${m}: business income ₹${bi}, business expense ₹${be}, business profit ₹${bi - be}; personal income ₹${s(data.income, "income", "personal")}, personal expense ₹${s(data.expenses, "expense", "personal")}`;
+    });
+    const accounts = Object.entries(data.accounts || {}).map(([k, a]) => `${k} ₹${(a.startingBalance || 0) + (a.entries || []).reduce((x, e) => x + (e.type === "in" ? e.amount : -e.amount), 0)}`).join(", ");
+    const funds = (data.funds || []).map((f) => `${f.name} ₹${data.fundBalances?.[f.id] || 0}`).join(", ");
+    const log = (data.jamesLog || []).slice(-15).map((l) => `${l.date} "${l.said}" → ${l.did}`);
+    return { peopleLines, habitLines, recent, monthLines, accounts, funds, log, notes: (data.businessMemory || "").trim() };
+  };
 
   const buildPrompt = (threadSoFar, currentIntent, currentFields, saveError) => {
+    const today = todayISO();
     const openRecv = data.receivables.filter((r) => r.status === "pending").map((r) => `${r.party} owes me ₹${r.amount}`);
     const openPay = data.payables.filter((r) => r.status === "pending").map((r) => `I owe ${r.party} ₹${r.amount}`);
     const pendingOrders = data.investments.filter((i) => String(i.status || "").startsWith("pending_landing")).map((i) => i.name).slice(-8);
-    const today = todayISO();
     const openSales = (data.sales || []).filter((x) => saleBalance(x) > 0).map((x) => `${x.party} [${x.channel}]${x.item ? ` ${x.item}` : ""}: ₹${saleBalance(x)} baaki of ₹${x.saleValue}, sold ${x.date}, ${x.dueDate ? (x.dueDate < today ? `OVERDUE by ${dayDiff(x.dueDate, today)} days (due ${x.dueDate})` : `due ${x.dueDate}`) : "no due date"}`);
-    const mkNow = monthKey(today);
-    const sumM = (arr, cls, kind) => arr.filter((e) => monthKey(e.date) === mkNow && entryClass(e, kind) === cls).reduce((a, e) => a + e.amount, 0);
-    const snapshot = `this month (${mkNow}) — business income ₹${sumM(data.income, "business", "income")}, business expense ₹${sumM(data.expenses, "business", "expense")}, personal income ₹${sumM(data.income, "personal", "income")}, personal expense ₹${sumM(data.expenses, "personal", "expense")}; sales made this month ₹${(data.sales || []).filter((x) => monthKey(x.date) === mkNow).reduce((a, x) => a + x.saleValue, 0)}; total still to receive on sales ₹${(data.sales || []).reduce((a, x) => a + saleBalance(x), 0)}`;
-    const intents = JAMES_INTENTS.map((i) => `"${i}" — ${JAMES_INTENT_DESC[i]}\n   fields: ${JAMES_FIELD_FLOWS[i].map((fd) => `${fd.key}${fd.optional ? " (optional)" : ""}: ${fd.label}`).join("; ")}`).join("\n");
+    const B = buildBrain();
+    const intents = JAMES_INTENTS.map((i) => `"${i}" — ${JAMES_INTENT_DESC[i]}\n   fields: ${JAMES_FIELD_FLOWS[i].map((fd) => `${fd.key}${fd.optional ? " (optional)" : ""}: ${fd.label}`).join("; ") || "none"}`).join("\n");
     const convoText = threadSoFar.map((m) => `${m.from === "james" ? "James" : "User"}: ${m.text}`).join("\n");
-    return `You are James, the money-ops brain of a small luxury resale business owner in India (he writes short Hinglish). Read the WHOLE conversation and work out what actually happened with his money, like a sharp accountant friend would — then either log it or ask ONE short question.
+    return `You are James, the money brain of Jeet, a solo luxury-resale founder in India (he writes short Hinglish). You keep his books exactly right. Read the WHOLE conversation, work out what actually happened with his money like a careful accountant who knows him well, and either get it ready to save or ask ONE short question.
 
-TODAY: ${todayISO()}
-OPEN SALES (the only things "sale_payment" can be used for):
+TODAY: ${today}
+
+=== WHAT YOU ALREADY KNOW (learned from him before — treat as fact, never re-ask these) ===
+${B.notes || "nothing yet"}
+
+=== PEOPLE IN HIS BOOKS ===
+${B.peopleLines.join("\n") || "none yet"}
+
+=== HIS HABITS (label, scope, how often, usual amount) ===
+${B.habitLines.join("\n") || "none yet"}
+
+=== WHAT HE TOLD YOU RECENTLY AND WHAT WAS SAVED ===
+${B.log.join("\n") || "none yet"}
+
+=== OPEN SALES (the only things "sale_payment" can be used for) ===
 ${openSales.join("\n") || "none"}
-OPEN DUES (the only things "settle_due" can be used for):
+=== OPEN DUES (the only things "settle_due" can be used for) ===
 ${[...openRecv, ...openPay].join("\n") || "none"}
-NUMBERS: ${snapshot}
-ORDERS WAITING TO LAND: ${pendingOrders.join(", ") || "none"}
+=== ORDERS WAITING TO LAND === ${pendingOrders.join(", ") || "none"}
+
+=== BOOKS (for answering questions) ===
+Monthly: 
+${B.monthLines.join("\n")}
+Accounts: ${B.accounts || "none"}
+Funds: ${B.funds || "none"}
+Last entries:
+${B.recent.join("\n") || "none"}
 
 INTENTS and the fields each needs:
 ${intents}
 
 CURRENT GUESS: intent=${currentIntent || "none yet"}, known fields=${JSON.stringify(currentFields || {})}
-${saveError ? `\nTHE LAST SAVE ATTEMPT FAILED: "${saveError}". Do NOT try the same thing again — pick the intent that actually fits, or ask the user one clarifying question.\n` : ""}
+${saveError ? `\nTHE LAST SAVE ATTEMPT FAILED: "${saveError}". Do NOT try the same thing again — pick the intent that actually fits, or ask one clarifying question.\n` : ""}
 CONVERSATION:
 ${convoText}
 
-RULES:
-- Re-decide the intent every turn from the whole conversation; change it freely if the user's later lines show the first guess was wrong.
-- Amounts: "5k"=5000, "1.5L"/"1.5 lakh"=150000, "2cr"=20000000. Never invent a number he didn't say.
-- "X ko diya / gave X" with NO open due for X is NOT settle_due. It is either money lent that should come back (add_due, dueType "receivable") or money spent (quick_entry expense). If his words make it clear ("udhaar", "lend", "wapas dega", "loan" → receivable; "kharcha", "payment", "salary", "tip", "kaam ka", a shop/service → expense) just use that; otherwise ask exactly: "Udhaar diya (wapas aayega) ya kharcha tha?"
-- "X se aaya / received from X" with no open due for X: income (quick_entry) — or a loan he took (add_due, "payable") only if he says so.
-- If the person HAS an open due, settle_due is right; "party" must be the name as written in OPEN DUES.
-- Money arriving from someone in OPEN SALES → sale_payment ("party" = the name as written there). Money arriving from someone only in OPEN DUES → settle_due. In neither → income.
-- He sold something ("becha", "sale", "order diya client ko", "X ko Y ka bag diya 12k me") → sale_order. Sourcex/KicksMachine buyers are "B2B".
-- If he is asking a question → intent "question": put a short, direct answer in "answer" using ONLY the exact figures above (names, amounts, days overdue), in his Hinglish. If the data does not contain the answer, say so. Do not log anything for a question.
-- Infer labels, scope and notes yourself. Ask only for things you genuinely cannot infer, one short question at a time, in his own casual Hinglish. Never re-ask something already answered. Optional fields never block saving.
-- readyToSave = true as soon as every non-optional field of the chosen intent has a real value.
+THE ONE RULE THAT MATTERS MOST — NEVER ASSUME A MATERIAL FACT:
+Material facts are: what kind of transaction this is, the amount, who it is with, how much was actually received/paid versus still due, whether money given will come back (udhaar) or is spent, and business vs personal when the label alone does not settle it.
+A material fact is KNOWN only if (a) he said it in this conversation, or (b) it is in WHAT YOU ALREADY KNOW / PEOPLE / HABITS above (e.g. the same person and kind of payment was logged the same way before).
+If a material fact is not known, set readyToSave=false and ask ONE short question about exactly that. A wrong entry is far worse than one extra question.
+Non-material details (exact label wording, a short note, the sale type when the buyer is already in PEOPLE) you may fill in yourself — and you MUST list every field you filled in without being told in "assumed", so he can see it before saving.
+
+OTHER RULES:
+- Re-decide the intent every turn from the whole conversation; change it if his later lines show the first guess was wrong.
+- Amounts: "5k"=5000, "1.5L"/"1.5 lakh"=150000, "2cr"=20000000. Never invent a number.
+- "X ko diya / gave X" with NO open due for X is NOT settle_due. Unless his words or your knowledge of X make it clear, ask exactly: "Udhaar diya (wapas aayega) ya kharcha tha?"
+- "X se aaya" → if X is in OPEN SALES: sale_payment; else if in OPEN DUES: settle_due; else income (or a loan he took, only if he says so). "party" must be the name exactly as written in those lists.
+- He sold something ("becha", "sale", "X ko bag diya 12k me") → sale_order. If he does not say how much was received so far, ASK ("abhi kitna aaya?") — do not assume 0 or full. Sourcex/KicksMachine buyers are "B2B".
+- If one message contains several separate transactions, handle only the first and say in nextQuestion that the rest should be sent one by one after this.
+- A question (kitna baaki, kiska paisa aana hai, is mahine ka profit, kaun late hai, kitna kharcha hua) → intent "question": answer in "answer" with exact figures from the data above, short, in his Hinglish. If the data does not contain it, say so plainly. Never log anything for a question.
+- One short question at a time, in his own casual Hinglish. Never re-ask something already answered or already known.
+- readyToSave=true only when every non-optional field has a real value AND no material fact was guessed.
+- "learn": durable facts worth remembering for next time that he just taught you (who a person is, what a recurring payment is for, how he wants something categorised, a usual payment term). One short line each, only genuinely reusable facts, [] otherwise. Never store amounts of single transactions.
 
 Return ONLY JSON, no other text:
-{"intent": one of ${JSON.stringify(JAMES_INTENTS)}, "fields": {only the chosen intent's field keys, null for unknown}, "nextQuestion": string or null, "readyToSave": boolean, "answer": string or null (only for "question")}`;
+{"intent": one of ${JSON.stringify(JAMES_INTENTS)}, "fields": {only the chosen intent's field keys, null for unknown}, "assumed": [field keys you filled in without being told], "nextQuestion": string or null, "readyToSave": boolean, "answer": string or null, "learn": [strings]}`;
   };
 
-  const think = async (threadSoFar, currentIntent, currentFields, saveError = null, retries = 0) => {
+  const think = async (threadSoFar, currentIntent, currentFields, saveError = null) => {
+    lastCallRef.current = [threadSoFar, currentIntent, currentFields, saveError];
     setLoading(true);
     setError(null);
+    setPending(null);
     try {
       const raw = await fetchAIText(buildPrompt(threadSoFar, currentIntent, currentFields, saveError));
       const match = raw.match(/\{[\s\S]*\}/);
@@ -1430,32 +1517,51 @@ Return ONLY JSON, no other text:
       setFields(updatedFields);
       const missing = missingRequired(chosen, updatedFields);
       if (missing.length === 0 && (obj.readyToSave || !obj.nextQuestion)) {
-        const result = SAVE_FNS[chosen](updatedFields);
-        if (result.ok) {
-          setThread((t) => [...t, { from: "james", text: result.message }]);
-          setDone(true);
-          if (setToast) { setToast("⚡ JAMES LOGGED IT"); setTimeout(() => setToast(null), 1800); }
-        } else if (retries < 1) {
-          // let the model re-think with the failure reason instead of parroting it back
-          await think(threadSoFar, chosen, updatedFields, result.message, retries + 1);
-          return;
-        } else {
-          setThread((t) => [...t, { from: "james", text: result.message }]);
-        }
+        // never save silently — show exactly what will be written and wait for one tap
+        const assumed = (Array.isArray(obj.assumed) ? obj.assumed : []).filter((k) => k in updatedFields && updatedFields[k] !== null && updatedFields[k] !== "");
+        const learn = (Array.isArray(obj.learn) ? obj.learn : []).map((x) => String(x).trim()).filter(Boolean).slice(0, 3);
+        setPending({ intent: chosen, fields: updatedFields, assumed, learn, said: threadSoFar.filter((m) => m.from === "user").map((m) => m.text).join(" / ") });
       } else {
         setThread((t) => [...t, { from: "james", text: obj.nextQuestion || `${missing[0] ? missing[0].label.split(" — ")[0] : "Thoda aur detail"} batao?` }]);
       }
     } catch (err) {
-      setError("James got confused there — try saying it again.");
+      // nothing was saved — say why, and let him retry the same message with one tap
+      setError(/429|rate|quota|too many/i.test(String(err && err.message)) ? "AI abhi busy hai (limit). Kuch save nahi hua — thodi der me RETRY dabao." : "James ko jawab nahi mila. Kuch save nahi hua — RETRY dabao.");
     } finally {
       setLoading(false);
     }
   };
+  const retryLast = () => { if (lastCallRef.current && !loading) think(...lastCallRef.current); };
 
-  const startConversation = async () => {
-    const text = typedText.trim();
+  // one tap on the confirmation: save, write the log line, keep what was learned
+  const confirmSave = async () => {
+    if (!pending || loading) return;
+    const p = pending;
+    const summary = describe(p.intent, p.fields).replace(/\n/g, " · ");
+    decorateRef.current = (next) => {
+      const logLine = { id: Date.now(), date: todayISO(), said: p.said.slice(0, 200), did: summary.slice(0, 200), intent: p.intent };
+      const have = (next.businessMemory || "").split("\n").filter(Boolean);
+      const fresh = p.learn.filter((l) => !have.some((h) => h.toLowerCase().includes(l.toLowerCase()))).map((l) => `- [${todayISO()}] ${l}`);
+      return { ...next, jamesLog: [...(next.jamesLog || []), logLine].slice(-200), businessMemory: [...have, ...fresh].slice(-60).join("\n") };
+    };
+    let result;
+    try { result = SAVE_FNS[p.intent](p.fields); } finally { decorateRef.current = null; }
+    setPending(null);
+    if (result.ok) {
+      setThread((t) => [...t, { from: "james", text: `✓ ${result.message}${p.learn.length ? `\nYaad rakh liya: ${p.learn.join("; ")}` : ""}` }]);
+      setDone(true);
+      if (setToast) { setToast("⚡ JAMES LOGGED IT"); setTimeout(() => setToast(null), 1800); }
+    } else {
+      // let the model re-think with the failure reason instead of parroting it back
+      await think(thread, p.intent, p.fields, result.message);
+    }
+  };
+
+  const startConversation = async (preset) => {
+    const text = (typeof preset === "string" ? preset : typedText).trim();
     if (!text || loading) return;
     setDone(false);
+    setShowLog(false);
     const initialThread = [{ from: "user", text }];
     setThread(initialThread);
     setTypedText("");
@@ -1473,22 +1579,37 @@ Return ONLY JSON, no other text:
     think(updatedThread, intent, fields);
   };
 
+  const another = () => { setThread([]); setIntent(null); setFields(null); setDone(false); setPending(null); setError(null); setChatInput(""); };
+
+  // one-tap starters learned from what he logs most
+  const starters = useMemo(() => {
+    const m = {};
+    data.expenses.slice(-80).filter((e) => !e.unnecessary).forEach((e) => { const k = `${e.amount} ${e.category}`; m[k] = (m[k] || 0) + 1; });
+    const mine = Object.entries(m).filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k]) => k);
+    return [...mine, "kiska kitna baaki hai?", "is mahine business profit?"].slice(0, 5);
+  }, [data.expenses]);
+
+  const fieldName = (k) => ({ channel: "type", scope: "business/personal", entryLabel: "category", note: "note", dueDate: "due date", itemName: "item", purpose: "business/personal", entryType: "type", moneyReceivedNow: "abhi kitna aaya", dueType: "lena/dena" }[k] || k);
+
   return (
     <>
       <button style={S.smartOrderFab} onClick={() => setOpen(true)}>
         <Zap size={20} color={T.bg} />
       </button>
       {open && (
-        <div style={S.calcOverlay} onClick={() => setOpen(false)}>
+        <div style={S.calcOverlay} onClick={() => (done ? resetAll() : setOpen(false))}>
           <div style={S.calcModal} onClick={(e) => e.stopPropagation()}>
             <div style={S.calcHeader}>
               <div style={{ fontSize: 13, fontWeight: 700, color: T.ivory, display: "flex", alignItems: "center", gap: 6 }}><Zap size={14} /> JAMES</div>
-              <button style={S.calcCloseBtn} onClick={() => setOpen(false)}><X size={16} color={T.ivory} /></button>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                {thread.length > 0 && !done && <button style={S.correctionLink} onClick={another}>NAYA SHURU</button>}
+                <button style={S.calcCloseBtn} onClick={() => (done ? resetAll() : setOpen(false))}><X size={16} color={T.ivory} /></button>
+              </div>
             </div>
 
             {thread.length === 0 && (
               <>
-                <div style={{ fontSize: 9.5, color: T.muted, marginBottom: 6 }}>TYPE ANYTHING — ORDERS, SALES, EXPENSES, DUES, JAMES ASKS WHAT'S MISSING</div>
+                <div style={{ fontSize: 9.5, color: T.muted, marginBottom: 6 }}>KUCH BHI LIKHO YA POOCHO — JAMES SAVE SE PEHLE DIKHAYEGA, SAMAJH NA AAYE TO POOCHEGA</div>
                 <div style={S.formRow}>
                   <input
                     type="text"
@@ -1499,9 +1620,31 @@ Return ONLY JSON, no other text:
                     style={{ ...S.input, width: "100%" }}
                   />
                 </div>
-                <button style={{ ...S.submitBtnPurple, width: "100%", marginTop: 8 }} className="npop" onClick={startConversation} disabled={loading}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                  {starters.map((st) => (
+                    <button key={st} onClick={() => startConversation(st)} disabled={loading} style={{ background: "none", color: T.ivory, border: `1px dashed ${T.lineStrong}`, borderRadius: T.radiusPill, padding: "5px 10px", fontSize: 10.5, fontWeight: 700 }}>{st}</button>
+                  ))}
+                </div>
+                <button style={{ ...S.submitBtnPurple, width: "100%", marginTop: 10 }} className="npop" onClick={() => startConversation()} disabled={loading}>
                   {loading ? "THINKING…" : "TALK TO JAMES"}
                 </button>
+                <button style={{ ...S.correctionLink, marginTop: 10 }} onClick={() => setShowLog((v) => !v)}>{showLog ? "HIDE" : `JAMES KI YAADDASHT · ${(data.jamesLog || []).length} ENTRIES`}</button>
+                {showLog && (
+                  <div style={{ marginTop: 8, maxHeight: 220, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
+                    {(data.businessMemory || "").trim() && (
+                      <div style={{ fontSize: 10.5, color: T.gold, lineHeight: 1.5, whiteSpace: "pre-wrap", border: `1px solid ${T.gold}40`, borderRadius: T.radiusSm, padding: "8px 10px" }}>
+                        <b>SEEKHA HUA</b>{"\n"}{data.businessMemory.trim()}
+                      </div>
+                    )}
+                    {(data.jamesLog || []).length === 0 && <div style={{ fontSize: 10.5, color: T.muted }}>abhi tak James se kuch log nahi hua</div>}
+                    {[...(data.jamesLog || [])].reverse().slice(0, 30).map((l) => (
+                      <div key={l.id} style={{ fontSize: 10.5, lineHeight: 1.45, borderBottom: `1px solid ${T.line}`, paddingBottom: 5 }}>
+                        <div style={{ color: T.muted }}>{fmtDateShort(l.date)} · “{l.said}”</div>
+                        <div style={{ color: T.ivory, fontWeight: 600 }}>{l.did}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </>
             )}
 
@@ -1515,7 +1658,7 @@ Return ONLY JSON, no other text:
                         alignSelf: m.from === "james" ? "flex-start" : "flex-end",
                         background: m.from === "james" ? T.surfaceHi : T.purple,
                         color: m.from === "james" ? T.ivory : T.bg,
-                        borderRadius: T.radiusMd, padding: "8px 12px", fontSize: 12, maxWidth: "85%",
+                        borderRadius: T.radiusMd, padding: "8px 12px", fontSize: 12, maxWidth: "85%", whiteSpace: "pre-wrap",
                       }}
                     >
                       {m.text}
@@ -1524,7 +1667,23 @@ Return ONLY JSON, no other text:
                   {loading && <div style={{ fontSize: 11, color: T.muted, alignSelf: "flex-start" }}>James is typing…</div>}
                 </div>
 
-                {error && <div style={{ fontSize: 11, color: T.orange, fontWeight: 700, marginBottom: 8 }}>{error}</div>}
+                {error && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                    <div style={{ fontSize: 11, color: T.orange, fontWeight: 700, flex: 1 }}>{error}</div>
+                    <button style={S.correctionLink} onClick={retryLast} disabled={loading}>RETRY</button>
+                  </div>
+                )}
+
+                {pending && !loading && (
+                  <div style={{ border: `1px solid ${T.green}66`, borderRadius: T.radiusMd, padding: "10px 12px", marginBottom: 10, background: `${T.green}0D` }}>
+                    <div style={{ fontSize: 9.5, color: T.green, fontWeight: 700, letterSpacing: "0.05em", marginBottom: 5 }}>YE SAVE KARU?</div>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{describe(pending.intent, pending.fields)}</div>
+                    {pending.assumed.length > 0 && (
+                      <div style={{ fontSize: 10.5, color: T.gold, fontWeight: 700, marginTop: 6 }}>⚠ Ye maine khud maana: {pending.assumed.map(fieldName).join(", ")} — galat ho to neeche likh do</div>
+                    )}
+                    <button style={{ ...S.submitBtnGreen, width: "100%", marginTop: 10 }} className="npop" onClick={confirmSave}>✓ SAHI HAI, SAVE KARO</button>
+                  </div>
+                )}
 
                 {!done ? (
                   <div style={S.formRow}>
@@ -1534,14 +1693,17 @@ Return ONLY JSON, no other text:
                       onChange={(e) => setChatInput(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && submitReply()}
                       style={{ ...S.input, width: "100%" }}
-                      placeholder="reply…"
+                      placeholder={pending ? "galat hai? yahan sahi batao…" : "reply…"}
                       disabled={loading}
                       autoFocus
                     />
                     <button style={S.submitBtnGreen} className="npop" onClick={submitReply} disabled={loading || !chatInput.trim()}>SEND</button>
                   </div>
                 ) : (
-                  <button style={{ ...S.submitBtnPurple, width: "100%" }} className="npop" onClick={resetAll}>DONE — CLOSE</button>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button style={{ ...S.submitBtnGreen, flex: 1 }} className="npop" onClick={another}>+ EK AUR</button>
+                    <button style={{ ...S.submitBtnPurple, flex: 1 }} className="npop" onClick={resetAll}>DONE — CLOSE</button>
+                  </div>
                 )}
               </div>
             )}
@@ -1849,6 +2011,7 @@ const emptyData = () => ({
   payables: [],
   investments: [],
   sales: [],
+  jamesLog: [],
   xp: 0,
   streak: { count: 0, lastActiveDate: null },
   profitTargets: { daily: 10000, weekly: 70000, monthly: 300000 },
@@ -1916,6 +2079,7 @@ export default function Khata() {
         loaded.profitTargets = loaded.profitTargets || { daily: 10000, weekly: 70000, monthly: 300000 };
         loaded.investments = loaded.investments || [];
         loaded.sales = loaded.sales || [];
+        loaded.jamesLog = loaded.jamesLog || [];
         loaded.openingBalance = loaded.openingBalance || 0;
         loaded.accounts = loaded.accounts || { cash: { startingBalance: 0, entries: [] }, bank: { startingBalance: 0, entries: [] }, forex: { startingBalance: 0, entries: [] } };
         ["cash", "bank", "forex"].forEach((k) => {
