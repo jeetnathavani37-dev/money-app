@@ -4328,20 +4328,30 @@ function IncomeTab({ data, persist, registerActivity, setToast, triggerNoteAnim 
   );
 }
 
-/* ---------------- Business (business-only income / expense, one-tap add) ---------------- */
+/* ---------------- Business (business-only income / expense, one-tap add, accuracy checks) ---------------- */
 
-const BIZ_INCOME_SOURCES = ["Sourcex Payout", "KicksMachine", "Direct Client", "Other Business"];
+const BIZ_INCOME_SOURCES = ["Sourcex Payout", "KicksMachine", "Direct Client", "Sold Order", "Other Business"];
 const BIZ_EXPENSE_CATS = ["Sourcing/Business", "Shipping/Logistics", "Packaging", "Business Tools/Software"];
-const BIZ_CHIP_LABEL = { "Sourcing/Business": "Sourcing", "Shipping/Logistics": "Shipping", "Packaging": "Packaging", "Business Tools/Software": "Tools", "Sourcex Payout": "Sourcex", "KicksMachine": "KicksMachine", "Direct Client": "Direct Client", "Other Business": "Other" };
+const BIZ_CHIP_LABEL = { "Sourcing/Business": "Sourcing", "Shipping/Logistics": "Shipping", "Packaging": "Packaging", "Business Tools/Software": "Tools", "Sourcex Payout": "Sourcex", "KicksMachine": "KicksMachine", "Direct Client": "Direct Client", "Sold Order": "Sold Order", "Other Business": "Other" };
+// labels that are clearly personal — everything else without an explicit scope lands in "needs tagging"
+const PERSONAL_INCOME_SOURCES = ["Personal"];
+const PERSONAL_EXPENSE_CATS = ["Gym", "Healthy Food", "Food", "Travel", "Shopping", "Subscriptions", "Rent"];
 
-// An entry is "business" if it was saved with scope:"business", or (for older entries without a scope)
-// if its source/category is one of the business ones. Waste entries are never business.
-function entryIsBusiness(e, kind) {
-  if (e.scope) return e.scope === "business";
-  if (kind === "income") return BIZ_INCOME_SOURCES.includes(e.source);
-  if (e.unnecessary) return false;
-  return BIZ_EXPENSE_CATS.includes(e.category);
+// "business" | "personal" | "unsorted". An explicit scope always wins; otherwise the source/category decides,
+// and anything ambiguous is "unsorted" so it can be tagged with one tap instead of silently skewing the numbers.
+function entryClass(e, kind) {
+  if (e.scope === "business" || e.scope === "personal") return e.scope;
+  if (kind === "income") {
+    if (BIZ_INCOME_SOURCES.includes(e.source)) return "business";
+    if (PERSONAL_INCOME_SOURCES.includes(e.source)) return "personal";
+    return "unsorted";
+  }
+  if (e.unnecessary) return "personal"; // waste is never business
+  if (BIZ_EXPENSE_CATS.includes(e.category)) return "business";
+  if (PERSONAL_EXPENSE_CATS.includes(e.category)) return "personal";
+  return "unsorted";
 }
+const entryIsBusiness = (e, kind) => entryClass(e, kind) === "business";
 
 const bizLS = {
   get: (k, d) => { try { return localStorage.getItem(k) || d; } catch { return d; } },
@@ -4354,6 +4364,8 @@ function shiftMonthKey(mk, delta) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
+const csvCell = (v) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+
 function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAnim }) {
   const [mk, setMk] = useState(monthKey(todayISO()));
   const [kind, setKind] = useState("out"); // in | out
@@ -4363,6 +4375,9 @@ function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAni
   const [note, setNote] = useState("");
   const [account, setAccount] = useState("none");
   const [confirmId, setConfirmId] = useState(null);
+  const [warn, setWarn] = useState(null); // { sig, msg } — a duplicate/outlier warning that needs a second tap
+  const [edit, setEdit] = useState(null); // { row, values }
+  const [csvCopied, setCsvCopied] = useState(false);
 
   const bizIncome = useMemo(() => data.income.filter((e) => entryIsBusiness(e, "income")), [data.income]);
   const bizExpense = useMemo(() => data.expenses.filter((e) => entryIsBusiness(e, "expense")), [data.expenses]);
@@ -4376,6 +4391,20 @@ function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAni
   const prevProfit = sumMonth(bizIncome, prevKey) - sumMonth(bizExpense, prevKey);
   const today = todayISO();
   const todayProfit = bizIncome.filter((e) => e.date === today).reduce((s, e) => s + e.amount, 0) - bizExpense.filter((e) => e.date === today).reduce((s, e) => s + e.amount, 0);
+
+  // business dues — same "still open" definition the Dues tab uses
+  const openRecv = useMemo(() => (data.receivables || []).filter((r) => r.purpose === "business" && r.status !== "received" && r.status !== "rto"), [data.receivables]);
+  const openPay = useMemo(() => (data.payables || []).filter((r) => r.purpose === "business" && r.status !== "paid"), [data.payables]);
+  const toReceive = openRecv.reduce((s, r) => s + r.amount, 0);
+  const toPay = openPay.reduce((s, r) => s + r.amount, 0);
+  const overdueRecv = openRecv.filter((r) => r.dueDate && r.dueDate < today);
+
+  // entries that are neither clearly business nor clearly personal — tag them so no number is silently wrong
+  const unsorted = useMemo(() => {
+    const a = data.income.filter((e) => entryClass(e, "income") === "unsorted").map((e) => ({ ...e, _k: "in" }));
+    const b = data.expenses.filter((e) => entryClass(e, "expense") === "unsorted").map((e) => ({ ...e, _k: "out" }));
+    return [...a, ...b].sort((x, y) => y.date.localeCompare(x.date) || y.id - x.id);
+  }, [data.income, data.expenses]);
 
   const expenseByCat = useMemo(() => {
     const m = {};
@@ -4394,12 +4423,42 @@ function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAni
     return [...a, ...b].sort((x, y) => y.date.localeCompare(x.date) || y.id - x.id);
   }, [bizIncome, bizExpense, mk]);
 
+  const chips = kind === "in" ? BIZ_INCOME_SOURCES : BIZ_EXPENSE_CATS;
+  const label = kind === "in" ? labelIn : labelOut;
+  const setLabel = kind === "in" ? setLabelIn : setLabelOut;
+  const accent = kind === "in" ? T.green : T.orange;
+  const maxBar = Math.max(1, ...expenseByCat.map(([, v]) => v), ...incomeBySrc.map(([, v]) => v));
+
+  // last few distinct amounts for the selected label — one tap to re-use a typical figure
+  const recentAmounts = useMemo(() => {
+    const src = (kind === "in" ? bizIncome : bizExpense).filter((e) => (kind === "in" ? e.source : e.category) === label);
+    const out = [];
+    [...src].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).forEach((e) => { if (!out.includes(e.amount) && out.length < 3) out.push(e.amount); });
+    return out;
+  }, [bizIncome, bizExpense, kind, label]);
+
+  // any edit to the form clears a pending warning
+  useEffect(() => { setWarn(null); }, [amount, kind, labelIn, labelOut]);
+
+  const buildWarning = (amt, lbl, isIn) => {
+    const list = isIn ? bizIncome : bizExpense;
+    const same = list.filter((e) => (isIn ? e.source : e.category) === lbl);
+    if (same.some((e) => e.date === todayISO() && e.amount === amt)) return `SAME ${fmt(amt)} ${lbl.toUpperCase()} ALREADY LOGGED TODAY — TAP AGAIN TO ADD ANYWAY`;
+    if (same.length >= 3) {
+      const avg = same.reduce((s, e) => s + e.amount, 0) / same.length;
+      if (amt > avg * 5) return `${fmt(amt)} IS ${Math.round(amt / avg)}× YOUR USUAL ${lbl.toUpperCase()} (${fmt(avg)}) — TAP AGAIN IF RIGHT`;
+    }
+    return null;
+  };
+
   const save = () => {
     const amt = parseFloat(amount);
     if (!amt || amt <= 0) return;
-    const date = todayISO();
     const isIn = kind === "in";
-    const label = isIn ? labelIn : labelOut;
+    const sig = `${kind}|${label}|${amt}`;
+    const w = buildWarning(amt, label, isIn);
+    if (w && (!warn || warn.sig !== sig)) { setWarn({ sig, msg: w }); return; }
+    const date = todayISO();
     const fundDelta = fundDeltaForAmount(data.funds, amt, isIn ? 1 : -1);
     const fundBalances = swapFundDelta(data.fundBalances, null, fundDelta);
     let next;
@@ -4417,6 +4476,7 @@ function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAni
     bizLS.set(isIn ? "biz_last_in" : "biz_last_out", label);
     setAmount("");
     setNote("");
+    setWarn(null);
     if (mk !== monthKey(date)) setMk(monthKey(date));
     setToast(`${isIn ? "+" : "−"}${fmt(amt)} BUSINESS ${isIn ? "INCOME" : "EXPENSE"} SAVED`);
     setTimeout(() => setToast(null), 1400);
@@ -4432,11 +4492,54 @@ function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAni
     setConfirmId(null);
   };
 
-  const chips = kind === "in" ? BIZ_INCOME_SOURCES : BIZ_EXPENSE_CATS;
-  const label = kind === "in" ? labelIn : labelOut;
-  const setLabel = kind === "in" ? setLabelIn : setLabelOut;
-  const accent = kind === "in" ? T.green : T.orange;
-  const maxBar = Math.max(1, ...expenseByCat.map(([, v]) => v), ...incomeBySrc.map(([, v]) => v));
+  // tag an unsorted entry as business/personal (explicit scope wins from then on)
+  const tag = (row, scope) => {
+    const patch = (e) => (e.id === row.id ? { ...e, scope } : e);
+    persist(row._k === "in" ? { ...data, income: data.income.map(patch) } : { ...data, expenses: data.expenses.map(patch) });
+    setToast(`TAGGED ${scope.toUpperCase()}`);
+    setTimeout(() => setToast(null), 1000);
+  };
+
+  const startEdit = (row) => setEdit({ row, values: { amount: String(row.amount), date: row.date, label: row._k === "in" ? row.source : row.category, note: row.note || "" } });
+  const saveEdit = () => {
+    if (!edit) return;
+    const { row, values } = edit;
+    const amt = parseFloat(values.amount);
+    if (!amt || amt <= 0 || !values.date) return;
+    const isIn = row._k === "in";
+    const newDelta = fundDeltaForAmount(data.funds, amt, isIn ? 1 : -1);
+    const fundBalances = swapFundDelta(data.fundBalances, row.fundDelta, newDelta);
+    const patch = (e) => (e.id !== row.id ? e : {
+      ...e, amount: amt, date: values.date, note: values.note.trim(), fundDelta: newDelta, scope: "business",
+      ...(isIn ? { source: values.label } : { category: values.label }),
+    });
+    persist(isIn ? { ...data, income: data.income.map(patch), fundBalances } : { ...data, expenses: data.expenses.map(patch), fundBalances });
+    setEdit(null);
+  };
+
+  const csvText = () => {
+    const lines = ["Date,Type,Source/Category,Note,Income,Expense"];
+    [...rows].sort((a, b) => a.date.localeCompare(b.date) || a.id - b.id).forEach((e) => {
+      lines.push([e.date, e._k === "in" ? "Income" : "Expense", e._k === "in" ? e.source : e.category, e.note || "", e._k === "in" ? e.amount : "", e._k === "out" ? e.amount : ""].map(csvCell).join(","));
+    });
+    lines.push(["", "TOTAL", "", "", incomeM, expenseM].join(","));
+    lines.push(["", "PROFIT", "", "", profitM, ""].join(","));
+    return lines.join("\n");
+  };
+  const downloadCsv = () => {
+    try {
+      const blob = new Blob([csvText()], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `business-${mk}.csv`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch { /* ignore */ }
+  };
+  const copyCsv = async () => { const ok = await copyToClipboard(csvText()); setCsvCopied(ok); setTimeout(() => setCsvCopied(false), 1800); };
+
+  const editLabels = edit ? (edit.row._k === "in" ? BIZ_INCOME_SOURCES : BIZ_EXPENSE_CATS) : [];
+  const editOptions = edit ? Array.from(new Set([...editLabels, edit.values.label].filter(Boolean))) : [];
 
   return (
     <div>
@@ -4466,7 +4569,41 @@ function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAni
           <div style={S.statBoxLabel}>EXPENSE</div>
           <div style={{ ...S.statBoxNum, color: T.orange }} className="tnum">{fmt(expenseM)}</div>
         </div>
+        <div style={S.statBox}>
+          <div style={S.statBoxLabel}>TO RECEIVE · {openRecv.length}</div>
+          <div style={{ ...S.statBoxNum, color: T.blue }} className="tnum">{fmt(toReceive)}</div>
+          {overdueRecv.length > 0 && <div style={{ fontSize: 9.5, color: T.orange, fontWeight: 700, marginTop: 4 }}>{overdueRecv.length} OVERDUE</div>}
+        </div>
+        <div style={S.statBox}>
+          <div style={S.statBoxLabel}>TO PAY · {openPay.length}</div>
+          <div style={{ ...S.statBoxNum, color: T.gold }} className="tnum">{fmt(toPay)}</div>
+        </div>
       </div>
+
+      {unsorted.length > 0 && (
+        <>
+          <SectionLabel text={`NEEDS TAGGING · ${unsorted.length}`} />
+          <div style={{ ...S.formCard, border: `1px solid ${T.gold}55` }}>
+            <div style={{ fontSize: 11, color: T.muted, fontWeight: 600, lineHeight: 1.5 }}>Ye entries business ki hain ya personal? Tag karoge tabhi Biz profit sahi aayega.</div>
+            {unsorted.slice(0, 6).map((e) => (
+              <div key={`${e._k}${e.id}`}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600 }}>{e._k === "in" ? e.source : e.category} <span style={{ color: T.muted, fontSize: 10 }}>{fmtDateShort(e.date)}</span></div>
+                  {e.note && <div style={{ fontSize: 10, color: T.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.note}</div>}
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: e._k === "in" ? T.green : T.orange }} className="tnum">{e._k === "in" ? "+" : "−"}{fmt(e.amount)}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: -2, marginBottom: 4 }}>
+                <button onClick={() => tag(e, "business")} style={{ background: T.blue, color: T.bg, border: "none", borderRadius: T.radiusPill, padding: "6px 14px", fontSize: 10, fontWeight: 700 }}>BUSINESS</button>
+                <button onClick={() => tag(e, "personal")} style={{ background: "none", color: T.ivory, border: `1px solid ${T.lineStrong}`, borderRadius: T.radiusPill, padding: "6px 14px", fontSize: 10, fontWeight: 700 }}>PERSONAL</button>
+              </div>
+              </div>
+            ))}
+            {unsorted.length > 6 && <div style={{ fontSize: 10, color: T.muted, fontWeight: 700 }}>+ {unsorted.length - 6} aur</div>}
+          </div>
+        </>
+      )}
 
       <SectionLabel text="QUICK ADD" />
       <div style={S.formCard}>
@@ -4475,6 +4612,14 @@ function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAni
           <button style={{ ...S.toggleBtn, flex: 1, ...(kind === "in" ? { background: T.green, color: T.bg } : {}) }} onClick={() => setKind("in")}>INCOME</button>
         </div>
         <AmountInput value={amount} onChange={setAmount} placeholder="₹ amount" style={{ ...S.input, width: "100%", fontSize: 22, fontWeight: 700, padding: "14px 14px" }} />
+        {recentAmounts.length > 0 && (
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ fontSize: 9.5, color: T.muted, fontWeight: 700, letterSpacing: "0.04em" }}>RECENT</span>
+            {recentAmounts.map((a) => (
+              <button key={a} onClick={() => setAmount(String(a))} className="tnum" style={{ background: "none", color: T.ivory, border: `1px dashed ${T.lineStrong}`, borderRadius: T.radiusPill, padding: "4px 10px", fontSize: 11, fontWeight: 700 }}>{fmt(a)}</button>
+            ))}
+          </div>
+        )}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
           {chips.map((c) => (
             <button key={c} onClick={() => setLabel(c)} style={{ background: label === c ? accent : T.bg, color: label === c ? T.bg : T.ivory, border: `1px solid ${label === c ? accent : T.line}`, borderRadius: T.radiusPill, padding: "8px 13px", fontSize: 11.5, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif" }}>{BIZ_CHIP_LABEL[c] || c}</button>
@@ -4482,13 +4627,14 @@ function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAni
         </div>
         <input type="text" placeholder="note (optional)" value={note} onChange={(e) => setNote(e.target.value)} style={{ ...S.input, width: "100%" }} />
         <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
-          <span style={{ fontSize: 10, color: T.muted, fontWeight: 700, letterSpacing: "0.04em" }}>PAID VIA</span>
+          <span style={{ fontSize: 10, color: T.muted, fontWeight: 700, letterSpacing: "0.04em" }}>{kind === "in" ? "RECEIVED IN" : "PAID VIA"}</span>
           {["none", "cash", "bank"].map((a) => (
             <button key={a} onClick={() => setAccount(a)} style={{ background: account === a ? T.surface : "none", color: account === a ? T.ivory : T.muted, border: `1px solid ${account === a ? T.lineStrong : T.line}`, borderRadius: T.radiusPill, padding: "5px 11px", fontSize: 10.5, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif" }}>{a === "none" ? "—" : a.toUpperCase()}</button>
           ))}
         </div>
-        <button style={{ ...S.submitBtnGreen, background: accent, boxShadow: glow(accent, 0.3), opacity: parseFloat(amount) > 0 ? 1 : 0.45 }} className="npop" onClick={save}>
-          SAVE {kind === "in" ? "INCOME" : "EXPENSE"}{parseFloat(amount) > 0 ? ` · ${fmt(parseFloat(amount))}` : ""}
+        {warn && <div style={{ fontSize: 10.5, fontWeight: 700, color: T.gold, background: `${T.gold}14`, border: `1px solid ${T.gold}40`, borderRadius: T.radiusSm, padding: "8px 10px", lineHeight: 1.4 }}>⚠ {warn.msg}</div>}
+        <button style={{ ...S.submitBtnGreen, background: warn ? T.gold : accent, boxShadow: glow(warn ? T.gold : accent, 0.3), opacity: parseFloat(amount) > 0 ? 1 : 0.45 }} className="npop" onClick={save}>
+          {warn ? "ADD ANYWAY" : `SAVE ${kind === "in" ? "INCOME" : "EXPENSE"}${parseFloat(amount) > 0 ? ` · ${fmt(parseFloat(amount))}` : ""}`}
         </button>
       </div>
 
@@ -4510,23 +4656,46 @@ function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAni
         </>
       )}
 
-      <SectionLabel text="THIS MONTH'S BUSINESS ENTRIES" />
+      <div style={S.sectionHeadRow}>
+        <SectionLabel text="THIS MONTH'S BUSINESS ENTRIES" noMargin />
+        <div style={{ display: "flex", gap: 10 }}>
+          <button style={S.correctionLink} onClick={copyCsv}>{csvCopied ? "COPIED ✓" : "COPY CSV"}</button>
+          <button style={S.correctionLink} onClick={downloadCsv}>DOWNLOAD</button>
+        </div>
+      </div>
       <div style={S.ledger}>
         {rows.length === 0 && <EmptyNote text="no business entries this month" />}
         {rows.map((e) => (
           <div key={`${e._k}${e.id}`} style={S.ledgerRow}>
             <div style={S.ledgerDate}>{fmtDateShort(e.date)}</div>
             <div style={S.ledgerMain}>
-              <div style={S.ledgerCategory}>{e._k === "in" ? e.source : e.category}</div>
+              <div style={S.ledgerCategory}>{e._k === "in" ? e.source : e.category}{e.lxOrder && <span style={{ ...S.fineTag, marginLeft: 6, color: T.blue, borderColor: `${T.blue}66` }}>AUTO</span>}</div>
               {e.note && <div style={S.ledgerNote}>{e.note}</div>}
             </div>
             <div style={{ ...S.ledgerAmt, color: e._k === "in" ? T.green : T.orange }} className="tnum">{e._k === "in" ? "+" : "−"}{fmt(e.amount)}</div>
+            <button style={S.editBtn} onClick={() => startEdit(e)} title="edit"><Pencil size={12} color={T.muted} /></button>
             <button style={S.deleteBtn} onClick={() => remove(e)} title="delete">
               {confirmId === e.id ? <span style={{ fontSize: 9, color: T.orange, fontWeight: 700 }}>SURE?</span> : <Trash2 size={13} color={T.muted} />}
             </button>
           </div>
         ))}
       </div>
+
+      {edit && (
+        <EditEntryModal
+          title={edit.row._k === "in" ? "EDIT BUSINESS INCOME" : "EDIT BUSINESS EXPENSE"}
+          values={edit.values}
+          onChange={(key, val) => setEdit({ ...edit, values: { ...edit.values, [key]: val } })}
+          onSave={saveEdit}
+          onCancel={() => setEdit(null)}
+          fields={[
+            { key: "amount", type: "amount", label: "amount" },
+            { key: "date", type: "date", label: "date" },
+            { key: "label", type: "select", label: edit.row._k === "in" ? "source" : "category", options: editOptions },
+            { key: "note", type: "text", label: "note (optional)" },
+          ]}
+        />
+      )}
     </div>
   );
 }

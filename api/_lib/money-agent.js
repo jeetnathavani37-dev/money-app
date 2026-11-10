@@ -69,7 +69,7 @@ const TOOLS = [
       properties: {
         kind: { type: "string", enum: ["income", "expense", "waste"], description: "income = money earned; expense = a normal necessary cost; waste = impulsive/unnecessary spending (drinks, gambling, impulse buys) — carries an automatic fine" },
         amount: { type: "number", description: "the amount, before any waste fine" },
-        label: { type: "string", description: "category (for expense/waste) or source (for income). Business income sources: 'Sourcex Payout', 'KicksMachine', 'Direct Client', 'Other Business'. Business expense categories: 'Sourcing/Business', 'Shipping/Logistics', 'Packaging', 'Business Tools/Software'. Personal examples: 'Food', 'Gym', 'Travel', 'Shopping'." },
+        label: { type: "string", description: "category (for expense/waste) or source (for income). Business income sources: 'Sourcex Payout', 'KicksMachine', 'Direct Client', 'Sold Order', 'Other Business'. Business expense categories: 'Sourcing/Business', 'Shipping/Logistics', 'Packaging', 'Business Tools/Software'. Personal examples: 'Food', 'Gym', 'Travel', 'Shopping'." },
         scope: { type: "string", enum: ["business", "personal"], description: "business = a Luxella/resale-business income or cost (supplier payouts, stock purchases, shipping/reship, packaging, business tools, client payments); personal = everything else. Set it whenever it is clear from the message; omit only if genuinely ambiguous." },
         note: { type: "string", description: "short free-text note, optional" },
         date: { type: "string", description: "YYYY-MM-DD; omit to use today" },
@@ -276,7 +276,7 @@ function normalizeBizLabel(kind, label, scope) {
     if (/kicks ?machine|\bkm\b/.test(l)) return "KicksMachine";
     if (scope === "business") {
       if (/client|customer|direct|sold|sale/.test(l)) return "Direct Client";
-      if (!["Sourcex Payout", "KicksMachine", "Direct Client", "Other Business"].includes(label)) return "Other Business";
+      if (!["Sourcex Payout", "KicksMachine", "Direct Client", "Sold Order", "Other Business"].includes(label)) return "Other Business";
     }
     return label;
   }
