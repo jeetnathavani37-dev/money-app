@@ -180,3 +180,23 @@ ones above (`normalizeBizLabel` in `api/_lib/money-agent.js`), so Telegram/Whats
 rows with the active scope. Never pass a filtered `data` together with the raw `persist` — that would
 delete the hidden rows. `BusinessTab`, James, voice and the calculator always get the full data.
 Fund balances, accounts, goals and net worth are shared and not split by scope.
+
+## Sales tracker (`data.sales`) and per-mode tabs
+
+`SalesTab` tracks every business sale as a record: `{ id, date, party, channel, item, saleValue, cost,
+dueDate, payments: [{ id, date, amount, incomeId }], note }`. `channel` is one of `B2B`, `Reseller`,
+`B2C`, `Client`. Balance, status (paid / partial / pending / overdue) and days overdue are always
+derived (`saleBalance`, `saleStatus`), never stored.
+
+Money rule: a sale by itself moves no money. Each payment (`applySalePayment`) creates a business
+income entry linked by `saleId` and updates the fund split; `removeSalePayment` reverses both. Deleting a
+sale keeps the income already received. Always go through `createSale` / `applySalePayment` — the Sales
+tab and James share them.
+
+James: `sale_order` now creates a sale record (replacing the old "profit now + receivable" booking),
+`sale_payment` applies money to a buyer's oldest open sale, and `question` answers from the open sales /
+dues / month numbers given in the prompt without logging anything. The old `+ SOLD ORDER` quick action
+and the Telegram/WhatsApp `log_sale_order` tool still use the earlier profit-based booking.
+
+Tabs per view (`NAV_BY_MODE`): PERSONAL and BUSINESS each have their own tab set; ALL shows every tab.
+Sales are business-only (`SCOPED_KEYS.sales`).

@@ -8,7 +8,7 @@ import {
   Plus, Trash2, X, Loader2, Settings2, Check, Target, Flame, Award,
   ArrowDownCircle, ArrowUpCircle, Home, Wallet, ListChecks, Pin, Landmark,
   Calculator, Delete, RefreshCw, Layers, Trophy, Swords, Lock, BarChart3,
-  FileDown, FileSpreadsheet, Printer, Mic, Zap, Pencil, TrendingUp, PackageCheck, Briefcase,
+  FileDown, FileSpreadsheet, Printer, Mic, Zap, Pencil, TrendingUp, PackageCheck, Briefcase, Receipt,
 } from "lucide-react";
 import rupee10 from "./assets/notes/rupee-10.jpg";
 import rupee20 from "./assets/notes/rupee-20.jpg";
@@ -1063,14 +1063,16 @@ function VoiceLogButton({ data, persist, registerActivity, setToast, triggerNote
 // that just moved against something ALREADY pending (settle_due — partial or full receivable/
 // payable settlement, which previously had no way to actually move cash into an account).
 const jamesScope = (v) => (v === "business" || v === "personal" ? v : null);
-const JAMES_INTENTS = ["b2b_order", "sale_order", "settle_due", "quick_entry", "cashout", "add_due"];
+const JAMES_INTENTS = ["b2b_order", "sale_order", "sale_payment", "settle_due", "quick_entry", "cashout", "add_due", "question"];
 const JAMES_INTENT_DESC = {
   b2b_order: "a NEW incoming order FROM a supplier (e.g. Sourcex/KicksMachine) that will be resold",
-  sale_order: "a NEW sale to a client",
-  settle_due: "money that just arrived from / was paid to someone against an amount ALREADY listed in OPEN DUES below — never use this if that person has no open due",
+  sale_order: "a NEW sale he made to someone (creates a sale in the Sales tracker with what is paid and what is still to come)",
+  sale_payment: "money that just arrived from a buyer who is listed in OPEN SALES below — never use this if that buyer has no open sale",
+  settle_due: "money that just arrived from / was paid to someone listed in OPEN DUES below — never use this if that person has no open due",
   quick_entry: "a plain income, expense or waste — money that moved and is not coming back",
   cashout: "inventory bought now to resell later (not a named supplier order)",
-  add_due: "a brand-new amount owed to/by someone — including money the user just lent/gave someone that should come back (receivable), or borrowed (payable)",
+  add_due: "a brand-new amount owed to/by someone that is NOT a sale — including money he just lent/gave someone that should come back (receivable), or borrowed (payable)",
+  question: "he is ASKING something about his money (kitna baaki hai, kiska paisa aana hai, is mahine ka profit, kaun late hai) rather than reporting a transaction",
 };
 
 // Which fields James needs for each intent, and how to describe them to the model. This list
@@ -1087,11 +1089,18 @@ const JAMES_FIELD_FLOWS = {
   ],
   sale_order: [
     { key: "clientName", label: "buyer/client name" },
+    { key: "channel", label: 'one of "B2B" (a business/platform buyer like Sourcex or KicksMachine), "Reseller" (someone who resells to their own customers), "B2C" (a walk-in/Instagram/retail customer), "Client" (a regular named concierge client). Infer it; if you truly cannot tell, use "Client"' },
     { key: "saleValue", label: "total sale value — number" },
-    { key: "expectedProfit", label: "profit from this sale — number" },
-    { key: "moneyReceivedNow", label: "cash already received right now — number, 0 if none" },
-    { key: "moneyDue", label: "amount still due/not yet received — number, 0 if fully paid" },
+    { key: "moneyReceivedNow", label: "cash already received right now — number. 0 if he says nothing was paid yet / it is all due later. Ask only if the message gives no hint at all" },
+    { key: "itemName", optional: true, label: "what was sold" },
+    { key: "dueDate", optional: true, label: 'when the remaining money should arrive, as YYYY-MM-DD — work it out from phrases like "15 din me", "next week", "month end" using TODAY; null if not said' },
+    { key: "costPrice", optional: true, label: "what the item cost him — number, only if he says it" },
   ],
+  sale_payment: [
+    { key: "party", label: "the buyer's name exactly as written in OPEN SALES" },
+    { key: "amount", label: "amount that just arrived — number" },
+  ],
+  question: [],
   settle_due: [
     { key: "party", label: "who the money is arriving from or being paid to" },
     { key: "amount", label: "amount that just moved — number" },
@@ -1180,44 +1189,49 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
       : `Done — order logged, nothing paid yet. Potential profit ₹${Math.round(investment.expectedProfit)}.` };
   };
 
+  // A new sale goes into the Sales tracker; whatever was received right now becomes a real payment
+  // (business income), and the rest stays as an open balance with its due date.
   const doSaveSaleOrder = (f) => {
-    const profit = parseFloat(f.expectedProfit) || 0;
-    if (!profit || profit <= 0) return { ok: false, message: "Profit ka number nahi mila — isme profit kitna hai?" };
-    const due = parseFloat(f.moneyDue) || 0;
-    const received = parseFloat(f.moneyReceivedNow) || 0;
-    const saleVal = parseFloat(f.saleValue) || 0;
-    const today = todayISO();
-    const profitPct = saleVal > 0 ? Math.round((profit / saleVal) * 1000) / 10 : null;
-    const buyer = (f.clientName || "buyer").trim() || "buyer";
-
-    const fundDelta = {};
-    const fundBalances = { ...data.fundBalances };
-    data.funds.forEach((fd) => {
-      const share = Math.round((profit * fd.pct) / 100);
-      fundDelta[fd.id] = share;
-      fundBalances[fd.id] = (fundBalances[fd.id] || 0) + share;
-    });
-    const income = {
-      id: Date.now(), amount: profit, source: "Sold Order",
-      note: `${buyer} — sale ₹${saleVal || 0}, received ₹${received || 0}${profitPct !== null ? ` (${profitPct}% margin)` : ""}`,
-      date: today, fundDelta, customerName: buyer, saleValue: saleVal || null,
-    };
-    let next = { ...data, income: [...data.income, income], fundBalances };
-    if (due > 0) {
-      const receivable = {
-        id: Date.now() + 1, party: buyer, amount: due, dueDate: null,
-        note: `Sold order — sale ₹${saleVal || 0}`, status: "pending",
-        fromSoldOrder: true, // profit already booked above — settling this later only moves cash, never re-logs income
-      };
-      next = { ...next, receivables: [...next.receivables, receivable] };
-    }
-    next = withAccountMovement(next, "none", "in", received, `Sold order — ${buyer}`, today);
+    const value = parseFloat(f.saleValue) || 0;
+    const buyer = (f.clientName || "").trim();
+    if (!buyer) return { ok: false, message: "Kisko becha — naam batao?" };
+    if (!value || value <= 0) return { ok: false, message: "Sale kitne ki thi?" };
+    const got = Math.min(value, Math.max(0, parseFloat(f.moneyReceivedNow) || 0));
+    const dueDate = typeof f.dueDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(f.dueDate) ? f.dueDate : null;
+    const { next: withSale, sale } = createSale(data, { party: buyer, channel: f.channel, item: f.itemName, saleValue: value, cost: parseFloat(f.costPrice) || null, dueDate });
+    let next = got > 0 ? applySalePayment(withSale, sale.id, got, todayISO(), "none") : withSale;
     if (registerActivity) next = registerActivity(next, 5);
     persist(next);
-    if (triggerNoteAnim) triggerNoteAnim(profit, "in");
+    if (got > 0 && triggerNoteAnim) triggerNoteAnim(got, "in");
+    const due = value - got;
     return { ok: true, message: due > 0
-      ? `Logged — ₹${profit} profit booked now, ₹${due} due later from ${buyer}. Settle that with me once it actually comes in.`
-      : `Logged — ₹${profit} profit booked from ${buyer}.` };
+      ? `Sale logged — ${buyer} (${sale.channel}), ${fmt(value)}. ${fmt(got)} aaya, ${fmt(due)} baaki${dueDate ? `, ${fmtDateShort(dueDate)} tak aana chahiye` : " (due date nahi di)"}.`
+      : `Sale logged — ${buyer} (${sale.channel}), ${fmt(value)} poora aa gaya.` };
+  };
+
+  const doSaveSalePayment = (f) => {
+    const q = (f.party || "").trim().toLowerCase();
+    const amt = parseFloat(f.amount) || 0;
+    if (!q || !amt || amt <= 0) return { ok: false, message: "Kisse aaya aur kitna — dono batao." };
+    const today = todayISO();
+    const open = (data.sales || []).filter((s) => saleBalance(s) > 0 && s.party && (s.party.toLowerCase().includes(q) || q.includes(s.party.toLowerCase())))
+      .sort((x, y) => (x.dueDate || x.date).localeCompare(y.dueDate || y.date));
+    if (open.length === 0) return { ok: false, message: `"${f.party}" ki koi open sale nahi mili.` };
+    // oldest open sale first; anything left over rolls on to the buyer's next open sale
+    let left = amt, next = data; const closed = [];
+    for (const s of open) {
+      if (left <= 0) break;
+      const pay = Math.min(left, saleBalance(s));
+      next = applySalePayment(next, s.id, pay, today, "none");
+      left -= pay;
+      if (pay >= saleBalance(s)) closed.push(s);
+    }
+    const applied = amt - left;
+    if (registerActivity) next = registerActivity(next, 5);
+    persist(next);
+    if (triggerNoteAnim) triggerNoteAnim(applied, "in");
+    const stillOwed = open.reduce((a, s) => a + saleBalance(s), 0) - applied;
+    return { ok: true, message: `${open[0].party} se ${fmt(applied)} laga diya.${stillOwed > 0 ? ` Abhi ${fmt(stillOwed)} baaki hai.` : " Sab settle."}${left > 0 ? ` ${fmt(left)} extra tha — wo kisi sale me nahi laga, alag se batao kis cheez ka tha.` : ""}` };
   };
 
   const doSaveSettleDue = (f) => {
@@ -1336,7 +1350,7 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
   };
 
   const SAVE_FNS = {
-    b2b_order: doSaveB2BOrder, sale_order: doSaveSaleOrder, settle_due: doSaveSettleDue,
+    b2b_order: doSaveB2BOrder, sale_order: doSaveSaleOrder, sale_payment: doSaveSalePayment, settle_due: doSaveSettleDue,
     quick_entry: doSaveQuickEntry, cashout: doSaveCashout, add_due: doSaveAddDue,
   };
 
@@ -1353,13 +1367,21 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
     const openRecv = data.receivables.filter((r) => r.status === "pending").map((r) => `${r.party} owes me ₹${r.amount}`);
     const openPay = data.payables.filter((r) => r.status === "pending").map((r) => `I owe ${r.party} ₹${r.amount}`);
     const pendingOrders = data.investments.filter((i) => String(i.status || "").startsWith("pending_landing")).map((i) => i.name).slice(-8);
+    const today = todayISO();
+    const openSales = (data.sales || []).filter((x) => saleBalance(x) > 0).map((x) => `${x.party} [${x.channel}]${x.item ? ` ${x.item}` : ""}: ₹${saleBalance(x)} baaki of ₹${x.saleValue}, sold ${x.date}, ${x.dueDate ? (x.dueDate < today ? `OVERDUE by ${dayDiff(x.dueDate, today)} days (due ${x.dueDate})` : `due ${x.dueDate}`) : "no due date"}`);
+    const mkNow = monthKey(today);
+    const sumM = (arr, cls, kind) => arr.filter((e) => monthKey(e.date) === mkNow && entryClass(e, kind) === cls).reduce((a, e) => a + e.amount, 0);
+    const snapshot = `this month (${mkNow}) — business income ₹${sumM(data.income, "business", "income")}, business expense ₹${sumM(data.expenses, "business", "expense")}, personal income ₹${sumM(data.income, "personal", "income")}, personal expense ₹${sumM(data.expenses, "personal", "expense")}; sales made this month ₹${(data.sales || []).filter((x) => monthKey(x.date) === mkNow).reduce((a, x) => a + x.saleValue, 0)}; total still to receive on sales ₹${(data.sales || []).reduce((a, x) => a + saleBalance(x), 0)}`;
     const intents = JAMES_INTENTS.map((i) => `"${i}" — ${JAMES_INTENT_DESC[i]}\n   fields: ${JAMES_FIELD_FLOWS[i].map((fd) => `${fd.key}${fd.optional ? " (optional)" : ""}: ${fd.label}`).join("; ")}`).join("\n");
     const convoText = threadSoFar.map((m) => `${m.from === "james" ? "James" : "User"}: ${m.text}`).join("\n");
     return `You are James, the money-ops brain of a small luxury resale business owner in India (he writes short Hinglish). Read the WHOLE conversation and work out what actually happened with his money, like a sharp accountant friend would — then either log it or ask ONE short question.
 
 TODAY: ${todayISO()}
+OPEN SALES (the only things "sale_payment" can be used for):
+${openSales.join("\n") || "none"}
 OPEN DUES (the only things "settle_due" can be used for):
 ${[...openRecv, ...openPay].join("\n") || "none"}
+NUMBERS: ${snapshot}
 ORDERS WAITING TO LAND: ${pendingOrders.join(", ") || "none"}
 
 INTENTS and the fields each needs:
@@ -1376,11 +1398,14 @@ RULES:
 - "X ko diya / gave X" with NO open due for X is NOT settle_due. It is either money lent that should come back (add_due, dueType "receivable") or money spent (quick_entry expense). If his words make it clear ("udhaar", "lend", "wapas dega", "loan" → receivable; "kharcha", "payment", "salary", "tip", "kaam ka", a shop/service → expense) just use that; otherwise ask exactly: "Udhaar diya (wapas aayega) ya kharcha tha?"
 - "X se aaya / received from X" with no open due for X: income (quick_entry) — or a loan he took (add_due, "payable") only if he says so.
 - If the person HAS an open due, settle_due is right; "party" must be the name as written in OPEN DUES.
+- Money arriving from someone in OPEN SALES → sale_payment ("party" = the name as written there). Money arriving from someone only in OPEN DUES → settle_due. In neither → income.
+- He sold something ("becha", "sale", "order diya client ko", "X ko Y ka bag diya 12k me") → sale_order. Sourcex/KicksMachine buyers are "B2B".
+- If he is asking a question → intent "question": put a short, direct answer in "answer" using ONLY the exact figures above (names, amounts, days overdue), in his Hinglish. If the data does not contain the answer, say so. Do not log anything for a question.
 - Infer labels, scope and notes yourself. Ask only for things you genuinely cannot infer, one short question at a time, in his own casual Hinglish. Never re-ask something already answered. Optional fields never block saving.
 - readyToSave = true as soon as every non-optional field of the chosen intent has a real value.
 
 Return ONLY JSON, no other text:
-{"intent": one of ${JSON.stringify(JAMES_INTENTS)}, "fields": {only the chosen intent's field keys, null for unknown}, "nextQuestion": string or null, "readyToSave": boolean}`;
+{"intent": one of ${JSON.stringify(JAMES_INTENTS)}, "fields": {only the chosen intent's field keys, null for unknown}, "nextQuestion": string or null, "readyToSave": boolean, "answer": string or null (only for "question")}`;
   };
 
   const think = async (threadSoFar, currentIntent, currentFields, saveError = null, retries = 0) => {
@@ -1391,6 +1416,13 @@ Return ONLY JSON, no other text:
       const match = raw.match(/\{[\s\S]*\}/);
       const obj = JSON.parse(match ? match[0] : raw);
       const chosen = JAMES_INTENTS.includes(obj.intent) ? obj.intent : (currentIntent || "quick_entry");
+      if (chosen === "question") {
+        // an answer, not a transaction — reply and stay open for the next line
+        setThread((t) => [...t, { from: "james", text: obj.answer || obj.nextQuestion || "Iska data mere paas nahi hai." }]);
+        setIntent(null);
+        setFields(null);
+        return;
+      }
       const base = chosen === currentIntent ? { ...blankFields(chosen), ...(currentFields || {}) } : blankFields(chosen);
       const incoming = Object.fromEntries(Object.entries(obj.fields || {}).filter(([k, v]) => k in base && v !== null && v !== undefined && v !== ""));
       const updatedFields = { ...base, ...incoming };
@@ -1816,6 +1848,7 @@ const emptyData = () => ({
   receivables: [],
   payables: [],
   investments: [],
+  sales: [],
   xp: 0,
   streak: { count: 0, lastActiveDate: null },
   profitTargets: { daily: 10000, weekly: 70000, monthly: 300000 },
@@ -1854,7 +1887,7 @@ export default function Khata() {
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState("overview");
   const [scopeMode, setScopeModeRaw] = useState(() => { const m = bizLS.get("money_scope_mode", "all"); return ["all", "personal", "business"].includes(m) ? m : "all"; });
-  const setScopeMode = (m) => { setScopeModeRaw(m); bizLS.set("money_scope_mode", m); };
+  const setScopeMode = (m) => { setScopeModeRaw(m); bizLS.set("money_scope_mode", m); if (NAV_BY_MODE[m] && !NAV_BY_MODE[m].includes(tab)) setTab("overview"); };
   const [toast, setToast] = useState(null);
   const [noteAnim, setNoteAnim] = useState(null);
   const [calcOpen, setCalcOpen] = useState(false);
@@ -1882,6 +1915,7 @@ export default function Khata() {
         loaded.auditedMonths = loaded.auditedMonths || [];
         loaded.profitTargets = loaded.profitTargets || { daily: 10000, weekly: 70000, monthly: 300000 };
         loaded.investments = loaded.investments || [];
+        loaded.sales = loaded.sales || [];
         loaded.openingBalance = loaded.openingBalance || 0;
         loaded.accounts = loaded.accounts || { cash: { startingBalance: 0, entries: [] }, bank: { startingBalance: 0, entries: [] }, forex: { startingBalance: 0, entries: [] } };
         ["cash", "bank", "forex"].forEach((k) => {
@@ -2154,6 +2188,7 @@ export default function Khata() {
         <ScopeBar mode={scopeMode} setMode={setScopeMode} untagged={untaggedCount} />
         {tab === "overview" && <OverviewTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "business" && <BusinessTab data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
+        {tab === "sales" && <SalesTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "income" && <IncomeTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "expense" && <ExpenseTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "funds" && <FundsTab data={viewData} persist={scopedPersist} />}
@@ -2166,7 +2201,7 @@ export default function Khata() {
         {tab === "hustle" && <HustleTab data={viewData} persist={scopedPersist} />}
       </div>
 
-      <BottomNav tab={tab} setTab={setTab} />
+      <BottomNav tab={tab} setTab={setTab} mode={scopeMode} />
       <NoteFlyOverlay anim={noteAnim} onDone={() => setNoteAnim(null)} />
       <FloatingCalcButton onClick={() => setCalcOpen(true)} />
 
@@ -2267,10 +2302,16 @@ function TopBar({ saving, xp, streak, nextCountryGoal, onOpenLockSetup }) {
   );
 }
 
-function BottomNav({ tab, setTab }) {
-  const items = [
+// which tabs each view gets — PERSONAL and BUSINESS each have their own set, ALL shows everything
+const NAV_BY_MODE = {
+  personal: ["overview", "income", "expense", "funds", "goals", "dues", "accounts", "investments", "pool", "analytics"],
+  business: ["overview", "business", "sales", "expense", "dues", "investments", "analytics", "hustle"],
+};
+function BottomNav({ tab, setTab, mode }) {
+  const allItems = [
     { id: "overview", label: "Home", icon: Home },
     { id: "business", label: "Biz", icon: Briefcase },
+    { id: "sales", label: "Sales", icon: Receipt },
     { id: "income", label: "Income", icon: ArrowUpCircle },
     { id: "expense", label: "Expense", icon: ArrowDownCircle },
     { id: "funds", label: "Funds", icon: Wallet },
@@ -2282,6 +2323,8 @@ function BottomNav({ tab, setTab }) {
     { id: "analytics", label: "Stats", icon: BarChart3 },
     { id: "hustle", label: "Hustle", icon: Zap },
   ];
+  const allowed = NAV_BY_MODE[mode];
+  const items = (allowed ? allItems.filter((it) => allowed.includes(it.id)) : allItems).map((it) => (mode === "business" && it.id === "investments" ? { ...it, label: "Stock" } : it));
   return (
     <div style={S.bottomNav}>
       {items.map((it) => {
@@ -4418,6 +4461,7 @@ const SCOPED_KEYS = {
   receivables: dueScope,
   payables: dueScope,
   investments: investmentScope,
+  sales: () => "business",
 };
 function scopeView(data, mode) {
   if (!data || mode === "all") return data;
@@ -4514,9 +4558,10 @@ function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAni
   // business dues — same "still open" definition the Dues tab uses
   const openRecv = useMemo(() => (data.receivables || []).filter((r) => r.purpose === "business" && r.status !== "received" && r.status !== "rto"), [data.receivables]);
   const openPay = useMemo(() => (data.payables || []).filter((r) => r.purpose === "business" && r.status !== "paid"), [data.payables]);
-  const toReceive = openRecv.reduce((s, r) => s + r.amount, 0);
+  const salesOut = salesOutstanding(data, today);
+  const toReceive = openRecv.reduce((s, r) => s + r.amount, 0) + salesOut.total;
   const toPay = openPay.reduce((s, r) => s + r.amount, 0);
-  const overdueRecv = openRecv.filter((r) => r.dueDate && r.dueDate < today);
+  const overdueRecv = [...openRecv.filter((r) => r.dueDate && r.dueDate < today), ...salesOut.overdue];
 
   // entries that are neither clearly business nor clearly personal — tag them so no number is silently wrong
   const unsorted = useMemo(() => {
@@ -4689,7 +4734,7 @@ function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAni
           <div style={{ ...S.statBoxNum, color: T.orange }} className="tnum">{fmt(expenseM)}</div>
         </div>
         <div style={S.statBox}>
-          <div style={S.statBoxLabel}>TO RECEIVE · {openRecv.length}</div>
+          <div style={S.statBoxLabel}>TO RECEIVE · {openRecv.length + salesOut.open.length}</div>
           <div style={{ ...S.statBoxNum, color: T.blue }} className="tnum">{fmt(toReceive)}</div>
           {overdueRecv.length > 0 && <div style={{ fontSize: 9.5, color: T.orange, fontWeight: 700, marginTop: 4 }}>{overdueRecv.length} OVERDUE</div>}
         </div>
@@ -4811,6 +4856,334 @@ function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAni
             { key: "amount", type: "amount", label: "amount" },
             { key: "date", type: "date", label: "date" },
             { key: "label", type: "select", label: edit.row._k === "in" ? "source" : "category", options: editOptions },
+            { key: "note", type: "text", label: "note (optional)" },
+          ]}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Sales (business receivables tracker: who paid, what is left, when it is due) ---------------- */
+
+const SALE_TYPES = ["B2B", "Reseller", "B2C", "Client"];
+const SALE_TYPE_COLOR = { B2B: "#4FC8FF", Reseller: "#7C5CFF", B2C: "#E8C468", Client: "#E5FE40" };
+const saleReceived = (s) => (s.payments || []).reduce((a, p) => a + (p.amount || 0), 0);
+const saleBalance = (s) => Math.max(0, (s.saleValue || 0) - saleReceived(s));
+const dayDiff = (a, b) => Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);
+// "paid" | "overdue" | "partial" | "pending"
+function saleStatus(s, today) {
+  if (saleBalance(s) <= 0) return "paid";
+  if (s.dueDate && s.dueDate < today) return "overdue";
+  return saleReceived(s) > 0 ? "partial" : "pending";
+}
+function saleIncomeSource(s) {
+  const p = (s.party || "").toLowerCase();
+  if (/sourcex/.test(p)) return "Sourcex Payout";
+  if (/kicks ?machine/.test(p)) return "KicksMachine";
+  return s.channel === "B2B" ? "Other Business" : "Direct Client";
+}
+// Pure helpers — the Sales tab and James both go through these, so a sale and its money always stay in step.
+function createSale(data, f) {
+  const sale = {
+    id: Date.now(), date: f.date || todayISO(), party: String(f.party || "").trim(), channel: SALE_TYPES.includes(f.channel) ? f.channel : "Client",
+    item: String(f.item || "").trim(), saleValue: Number(f.saleValue) || 0, cost: f.cost ? Number(f.cost) : null,
+    dueDate: f.dueDate || null, payments: [], note: String(f.note || "").trim(),
+  };
+  return { next: { ...data, sales: [...(data.sales || []), sale] }, sale };
+}
+// A payment is real money in: it becomes a business income entry (linked by saleId) and reduces the sale's balance.
+function applySalePayment(data, saleId, amt, date, account) {
+  const sale = (data.sales || []).find((s) => s.id === saleId);
+  if (!sale || !amt || amt <= 0) return data;
+  const fundDelta = fundDeltaForAmount(data.funds, amt, 1);
+  const fundBalances = swapFundDelta(data.fundBalances, null, fundDelta);
+  const incomeId = Date.now() + Math.floor(Math.random() * 1000);
+  const income = { id: incomeId, amount: amt, source: saleIncomeSource(sale), note: `${sale.party}${sale.item ? ` — ${sale.item}` : ""} (sale payment)`, date, fundDelta, scope: "business", saleId };
+  const payment = { id: incomeId + 1, date, amount: amt, incomeId };
+  const next = { ...data, income: [...data.income, income], fundBalances, sales: data.sales.map((s) => (s.id === saleId ? { ...s, payments: [...(s.payments || []), payment] } : s)) };
+  return withAccountMovement(next, account, "in", amt, `Sale — ${sale.party}`, date);
+}
+function removeSalePayment(data, saleId, paymentId) {
+  const sale = (data.sales || []).find((s) => s.id === saleId);
+  const payment = sale && (sale.payments || []).find((p) => p.id === paymentId);
+  if (!payment) return data;
+  const income = data.income.find((e) => e.id === payment.incomeId);
+  const fundBalances = income ? swapFundDelta(data.fundBalances, income.fundDelta, null) : data.fundBalances;
+  return {
+    ...data, fundBalances,
+    income: income ? data.income.filter((e) => e.id !== income.id) : data.income,
+    sales: data.sales.map((s) => (s.id === saleId ? { ...s, payments: s.payments.filter((p) => p.id !== paymentId) } : s)),
+  };
+}
+function salesOutstanding(data, today) {
+  const open = (data.sales || []).filter((s) => saleBalance(s) > 0);
+  const overdue = open.filter((s) => saleStatus(s, today) === "overdue");
+  return { open, overdue, total: open.reduce((a, s) => a + saleBalance(s), 0), overdueTotal: overdue.reduce((a, s) => a + saleBalance(s), 0) };
+}
+
+function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }) {
+  const today = todayISO();
+  const blank = { party: "", channel: "Client", item: "", saleValue: "", cost: "", receivedNow: "", dueDate: "", note: "" };
+  const [form, setForm] = useState(blank);
+  const [showForm, setShowForm] = useState(false);
+  const [typeFilter, setTypeFilter] = useState("ALL");
+  const [statusFilter, setStatusFilter] = useState("open"); // open | overdue | paid | all
+  const [recv, setRecv] = useState(null); // { id, amount, account }
+  const [openId, setOpenId] = useState(null);
+  const [confirmDel, setConfirmDel] = useState(null);
+  const [edit, setEdit] = useState(null);
+  const [formErr, setFormErr] = useState(null);
+
+  const sales = data.sales || [];
+  const mk = monthKey(today);
+  const out = useMemo(() => salesOutstanding(data, today), [data, today]);
+  const soldThisMonth = sales.filter((s) => monthKey(s.date) === mk).reduce((a, s) => a + s.saleValue, 0);
+  const receivedThisMonth = sales.reduce((a, s) => a + (s.payments || []).filter((p) => monthKey(p.date) === mk).reduce((x, p) => x + p.amount, 0), 0);
+
+  const byType = useMemo(() => {
+    const m = {};
+    SALE_TYPES.forEach((t) => { m[t] = { n: 0, bal: 0 }; });
+    out.open.forEach((s) => { const t = SALE_TYPES.includes(s.channel) ? s.channel : "Client"; m[t].n += 1; m[t].bal += saleBalance(s); });
+    return m;
+  }, [out]);
+
+  const aging = useMemo(() => {
+    const b = [{ k: "0–7 D", v: 0 }, { k: "8–15 D", v: 0 }, { k: "16–30 D", v: 0 }, { k: "30+ D", v: 0 }];
+    out.open.forEach((s) => { const d = dayDiff(s.date, today); b[d <= 7 ? 0 : d <= 15 ? 1 : d <= 30 ? 2 : 3].v += saleBalance(s); });
+    return b;
+  }, [out, today]);
+  const agingMax = Math.max(1, ...aging.map((x) => x.v));
+
+  const list = useMemo(() => {
+    const rank = { overdue: 0, partial: 1, pending: 1, paid: 2 };
+    return sales
+      .filter((s) => typeFilter === "ALL" || s.channel === typeFilter)
+      .filter((s) => { const st = saleStatus(s, today); return statusFilter === "all" || (statusFilter === "open" && st !== "paid") || (statusFilter === "overdue" && st === "overdue") || (statusFilter === "paid" && st === "paid"); })
+      .sort((a, b) => {
+        const ra = rank[saleStatus(a, today)], rb = rank[saleStatus(b, today)];
+        if (ra !== rb) return ra - rb;
+        if (ra === 2) return b.date.localeCompare(a.date) || b.id - a.id;
+        return (a.dueDate || "9999").localeCompare(b.dueDate || "9999") || a.date.localeCompare(b.date);
+      });
+  }, [sales, typeFilter, statusFilter, today]);
+
+  const addDays = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+
+  const addSale = () => {
+    const value = parseFloat(form.saleValue);
+    const got = parseFloat(form.receivedNow) || 0;
+    if (!form.party.trim()) { setFormErr("Kisko becha — naam daalo."); return; }
+    if (!value || value <= 0) { setFormErr("Sale ka amount daalo."); return; }
+    if (got > value) { setFormErr("Received amount sale value se zyada hai."); return; }
+    const { next: withSale, sale } = createSale(data, { ...form, saleValue: value, cost: parseFloat(form.cost) || null });
+    let next = got > 0 ? applySalePayment(withSale, sale.id, got, today, "none") : withSale;
+    next = registerActivity(next, 5);
+    persist(next);
+    if (got > 0) triggerNoteAnim(got, "in");
+    setForm(blank); setShowForm(false); setFormErr(null);
+    setToast(got >= value ? "SALE SAVED · FULLY PAID" : `SALE SAVED · ${fmt(value - got)} TO RECEIVE`);
+    setTimeout(() => setToast(null), 1600);
+  };
+
+  const receive = (s) => {
+    const amt = parseFloat(recv.amount);
+    if (!amt || amt <= 0) return;
+    const capped = Math.min(amt, saleBalance(s));
+    let next = applySalePayment(data, s.id, capped, today, recv.account);
+    next = registerActivity(next, 5);
+    persist(next);
+    triggerNoteAnim(capped, "in");
+    setRecv(null);
+    setToast(capped >= saleBalance(s) ? `${s.party.toUpperCase()} — FULLY SETTLED` : `+${fmt(capped)} · ${fmt(saleBalance(s) - capped)} LEFT`);
+    setTimeout(() => setToast(null), 1600);
+  };
+
+  const delSale = (s) => {
+    if (confirmDel !== s.id) { setConfirmDel(s.id); setTimeout(() => setConfirmDel((c) => (c === s.id ? null : c)), 3000); return; }
+    persist({ ...data, sales: sales.filter((x) => x.id !== s.id) }); // payments already received stay in the income ledger
+    setConfirmDel(null);
+  };
+
+  const saveEdit = () => {
+    const v = edit.values;
+    const value = parseFloat(v.saleValue);
+    if (!v.party.trim() || !value || value <= 0) return;
+    persist({ ...data, sales: sales.map((s) => (s.id !== edit.id ? s : { ...s, party: v.party.trim(), item: (v.item || "").trim(), saleValue: value, cost: parseFloat(v.cost) || null, dueDate: v.dueDate || null, channel: v.channel, note: (v.note || "").trim() })) });
+    setEdit(null);
+  };
+
+  const chip = (active, color) => ({ background: active ? color : T.bg, color: active ? T.bg : T.ivory, border: `1px solid ${active ? color : T.line}`, borderRadius: T.radiusPill, padding: "7px 12px", fontSize: 11, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif" });
+  const statusTag = (s) => {
+    const st = saleStatus(s, today);
+    if (st === "paid") return { text: "PAID", color: T.green };
+    if (st === "overdue") return { text: `${dayDiff(s.dueDate, today)} DAYS OVERDUE`, color: T.orange };
+    if (s.dueDate) { const d = dayDiff(today, s.dueDate); return { text: d === 0 ? "DUE TODAY" : `DUE IN ${d} D`, color: d <= 3 ? T.gold : T.muted }; }
+    return { text: `${dayDiff(s.date, today)} D OLD · NO DUE DATE`, color: T.muted };
+  };
+
+  return (
+    <div>
+      <div style={S.sectionHeadRow}>
+        <SectionLabel text="SALES & RECEIVABLES" noMargin />
+        <button style={S.addBtn} className="npop" onClick={() => { setShowForm((v) => !v); setFormErr(null); }}>
+          {showForm ? <X size={14} /> : <Plus size={14} />} {showForm ? "CANCEL" : "NEW SALE"}
+        </button>
+      </div>
+
+      <div style={S.statGrid}>
+        <div style={S.statBox}>
+          <div style={S.statBoxLabel}>TO RECEIVE · {out.open.length}</div>
+          <div style={{ ...S.statBoxNum, color: T.blue }} className="tnum">{fmt(out.total)}</div>
+        </div>
+        <div style={{ ...S.statBox, ...(out.overdue.length ? { border: `1px solid ${T.orange}66` } : {}) }}>
+          <div style={S.statBoxLabel}>OVERDUE · {out.overdue.length}</div>
+          <div style={{ ...S.statBoxNum, color: out.overdue.length ? T.orange : T.muted }} className="tnum">{fmt(out.overdueTotal)}</div>
+        </div>
+        <div style={S.statBox}>
+          <div style={S.statBoxLabel}>SOLD THIS MONTH</div>
+          <div style={{ ...S.statBoxNum, color: T.ivory }} className="tnum">{fmt(soldThisMonth)}</div>
+        </div>
+        <div style={S.statBox}>
+          <div style={S.statBoxLabel}>RECEIVED THIS MONTH</div>
+          <div style={{ ...S.statBoxNum, color: T.green }} className="tnum">{fmt(receivedThisMonth)}</div>
+        </div>
+      </div>
+
+      {showForm && (
+        <div style={S.formCard}>
+          <input type="text" placeholder="kisko becha (name)" value={form.party} onChange={(e) => setForm({ ...form, party: e.target.value })} style={{ ...S.input, width: "100%" }} />
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
+            {SALE_TYPES.map((t) => <button key={t} onClick={() => setForm({ ...form, channel: t })} style={chip(form.channel === t, SALE_TYPE_COLOR[t])}>{t.toUpperCase()}</button>)}
+          </div>
+          <input type="text" placeholder="item (optional)" value={form.item} onChange={(e) => setForm({ ...form, item: e.target.value })} style={{ ...S.input, width: "100%" }} />
+          <div style={S.formRow}>
+            <AmountInput placeholder="sale amount" value={form.saleValue} onChange={(v) => setForm({ ...form, saleValue: v })} style={S.input} className="tnum" />
+            <AmountInput placeholder="received now" value={form.receivedNow} onChange={(v) => setForm({ ...form, receivedNow: v })} style={S.input} className="tnum" />
+          </div>
+          <AmountInput placeholder="cost (optional — profit dikhane ke liye)" value={form.cost} onChange={(v) => setForm({ ...form, cost: v })} style={{ ...S.input, width: "100%" }} className="tnum" />
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ fontSize: 10, color: T.muted, fontWeight: 700, letterSpacing: "0.04em" }}>BAAKI KAB TAK</span>
+            {[7, 15, 30].map((n) => <button key={n} onClick={() => setForm({ ...form, dueDate: addDays(n) })} style={chip(form.dueDate === addDays(n), T.gold)}>{n} DIN</button>)}
+            <input type="date" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} style={{ ...S.input, flex: "1 1 120px", padding: "8px 10px" }} className="tnum" />
+          </div>
+          <input type="text" placeholder="note (optional)" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} style={{ ...S.input, width: "100%" }} />
+          {formErr && <div style={{ fontSize: 11, color: T.orange, fontWeight: 700 }}>{formErr}</div>}
+          <button style={S.submitBtnGreen} className="npop" onClick={addSale}>SAVE SALE</button>
+        </div>
+      )}
+
+      {out.open.length > 0 && (
+        <>
+          <SectionLabel text="KITNA PURANA BAAKI HAI" />
+          <div style={S.formCard}>
+            {aging.map((b, i) => (
+              <div key={b.k}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontWeight: 700, marginBottom: 4 }}>
+                  <span style={{ color: T.muted }}>{b.k}</span><span className="tnum" style={{ color: i >= 2 && b.v > 0 ? T.orange : T.ivory }}>{fmt(b.v)}</span>
+                </div>
+                <div style={{ height: 5, borderRadius: 3, background: T.bg, overflow: "hidden" }}>
+                  <div style={{ width: `${b.v > 0 ? Math.max(3, (b.v / agingMax) * 100) : 0}%`, height: "100%", background: i >= 2 ? T.orange : i === 1 ? T.gold : T.blue, borderRadius: 3 }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      <SectionLabel text="TYPE" />
+      <div style={{ display: "flex", gap: 7, overflowX: "auto", paddingBottom: 4 }}>
+        <button onClick={() => setTypeFilter("ALL")} style={{ ...chip(typeFilter === "ALL", T.ivory), flexShrink: 0 }}>ALL · {fmt(out.total)}</button>
+        {SALE_TYPES.map((t) => (
+          <button key={t} onClick={() => setTypeFilter(t)} style={{ ...chip(typeFilter === t, SALE_TYPE_COLOR[t]), flexShrink: 0 }}>{t.toUpperCase()} · {fmt(byType[t].bal)}</button>
+        ))}
+      </div>
+      <div style={{ ...S.toggleWrap, marginTop: 10 }}>
+        {[["open", "OPEN"], ["overdue", "OVERDUE"], ["paid", "PAID"], ["all", "ALL"]].map(([k, l]) => (
+          <button key={k} onClick={() => setStatusFilter(k)} style={{ ...S.toggleBtn, flex: 1, padding: "9px 4px", ...(statusFilter === k ? { background: T.surface, color: T.ivory, boxShadow: `inset 0 0 0 1px ${T.lineStrong}` } : {}) }}>{l}</button>
+        ))}
+      </div>
+
+      {list.length === 0 && <EmptyNote text={sales.length === 0 ? "koi sale nahi — NEW SALE dabao, ya James ko bolo: “rahul ko 12k ka bag becha, 5k aaya, baaki 15 din me”" : "is filter me kuch nahi"} />}
+      {list.map((s) => {
+        const got = saleReceived(s), bal = saleBalance(s), tag = statusTag(s);
+        const pct = s.saleValue > 0 ? Math.min(100, Math.round((got / s.saleValue) * 100)) : 0;
+        const profit = s.cost ? s.saleValue - s.cost : null;
+        const isOpen = openId === s.id;
+        return (
+          <div key={s.id} style={{ ...S.formCard, marginTop: 10, gap: 8, ...(saleStatus(s, today) === "overdue" ? { border: `1px solid ${T.orange}66` } : {}) }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }} onClick={() => setOpenId(isOpen ? null : s.id)}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>{s.party} <span style={{ ...S.fineTag, marginLeft: 4, color: SALE_TYPE_COLOR[s.channel] || T.muted, borderColor: `${SALE_TYPE_COLOR[s.channel] || T.muted}66` }}>{(s.channel || "").toUpperCase()}</span></div>
+                <div style={{ fontSize: 10.5, color: T.muted, marginTop: 3 }}>{s.item ? `${s.item} · ` : ""}{fmtDateShort(s.date)}{profit !== null ? ` · profit ${fmtSigned(profit)}` : ""}</div>
+              </div>
+              <div style={{ textAlign: "right", flexShrink: 0 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: bal > 0 ? T.blue : T.green }} className="tnum">{bal > 0 ? fmt(bal) : "✓ PAID"}</div>
+                <div style={{ fontSize: 9.5, color: T.muted, fontWeight: 700, marginTop: 2 }}>{bal > 0 ? "BAAKI" : fmt(s.saleValue)}</div>
+              </div>
+            </div>
+            <div style={{ height: 5, borderRadius: 3, background: T.bg, overflow: "hidden" }}>
+              <div style={{ width: `${pct}%`, height: "100%", background: T.green, borderRadius: 3 }} />
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, fontWeight: 700 }}>
+              <span style={{ color: T.muted }} className="tnum">{fmt(got)} AAYA / {fmt(s.saleValue)}</span>
+              <span style={{ color: tag.color }}>{tag.text}{s.dueDate && bal > 0 ? ` · ${fmtDateShort(s.dueDate)}` : ""}</span>
+            </div>
+
+            {recv && recv.id === s.id ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <AmountInput autoFocus placeholder="kitna aaya" value={recv.amount} onChange={(v) => setRecv({ ...recv, amount: v })} style={{ ...S.input, width: "100%", fontSize: 18, fontWeight: 700 }} className="tnum" />
+                <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
+                  <span style={{ fontSize: 10, color: T.muted, fontWeight: 700 }}>RECEIVED IN</span>
+                  {["none", "cash", "bank"].map((a) => <button key={a} onClick={() => setRecv({ ...recv, account: a })} style={{ ...chip(recv.account === a, T.ivory), padding: "5px 11px", fontSize: 10.5 }}>{a === "none" ? "—" : a.toUpperCase()}</button>)}
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button style={{ ...S.submitBtnGreen, flex: 1 }} className="npop" onClick={() => receive(s)}>SAVE PAYMENT</button>
+                  <button style={{ ...S.correctionLink }} onClick={() => setRecv(null)}>CANCEL</button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                {bal > 0 && <button style={{ ...S.submitBtnGreen, flex: 1, padding: "10px" }} className="npop" onClick={() => setRecv({ id: s.id, amount: String(bal), account: "none" })}>PAISA AAYA</button>}
+                <button style={S.correctionLink} onClick={() => setOpenId(isOpen ? null : s.id)}>{isOpen ? "HIDE" : `LOG · ${(s.payments || []).length}`}</button>
+                <button style={S.editBtn} onClick={() => setEdit({ id: s.id, values: { party: s.party, item: s.item || "", saleValue: String(s.saleValue), cost: s.cost ? String(s.cost) : "", dueDate: s.dueDate || "", channel: s.channel, note: s.note || "" } })} title="edit"><Pencil size={12} color={T.muted} /></button>
+                <button style={S.deleteBtn} onClick={() => delSale(s)} title="delete">{confirmDel === s.id ? <span style={{ fontSize: 9, color: T.orange, fontWeight: 700 }}>SURE?</span> : <Trash2 size={13} color={T.muted} />}</button>
+              </div>
+            )}
+
+            {isOpen && (
+              <div style={{ borderTop: `1px solid ${T.line}`, paddingTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ fontSize: 10.5, color: T.muted, fontWeight: 600 }}>{fmtDateShort(s.date)} · sale {fmt(s.saleValue)} bana{s.cost ? ` · cost ${fmt(s.cost)}` : ""}{s.note ? ` · ${s.note}` : ""}</div>
+                {(s.payments || []).length === 0 && <div style={{ fontSize: 10.5, color: T.muted }}>abhi tak koi payment nahi aaya</div>}
+                {(s.payments || []).map((p) => (
+                  <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11.5, fontWeight: 600 }}>
+                    <span>{fmtDateShort(p.date)} · payment aaya</span>
+                    <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span className="tnum" style={{ color: T.green }}>+{fmt(p.amount)}</span>
+                      <button style={S.deleteBtn} onClick={() => persist(removeSalePayment(data, s.id, p.id))} title="remove payment"><X size={12} color={T.muted} /></button>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {edit && (
+        <EditEntryModal
+          title="EDIT SALE"
+          values={edit.values}
+          onChange={(key, val) => setEdit({ ...edit, values: { ...edit.values, [key]: val } })}
+          onSave={saveEdit}
+          onCancel={() => setEdit(null)}
+          fields={[
+            { key: "party", type: "text", label: "name" },
+            { key: "channel", type: "select", label: "type", options: SALE_TYPES },
+            { key: "item", type: "text", label: "item" },
+            { key: "saleValue", type: "amount", label: "sale amount" },
+            { key: "cost", type: "amount", label: "cost (optional)" },
+            { key: "dueDate", type: "date", label: "due date" },
             { key: "note", type: "text", label: "note (optional)" },
           ]}
         />
