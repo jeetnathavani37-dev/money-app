@@ -8,7 +8,7 @@ import {
   Plus, Trash2, X, Loader2, Settings2, Check, Target, Flame, Award,
   ArrowDownCircle, ArrowUpCircle, Home, Wallet, ListChecks, Pin, Landmark,
   Calculator, Delete, RefreshCw, Layers, Trophy, Swords, Lock, BarChart3,
-  FileDown, FileSpreadsheet, Printer, Mic, Zap, Pencil, TrendingUp, PackageCheck,
+  FileDown, FileSpreadsheet, Printer, Mic, Zap, Pencil, TrendingUp, PackageCheck, Briefcase,
 } from "lucide-react";
 import rupee10 from "./assets/notes/rupee-10.jpg";
 import rupee20 from "./assets/notes/rupee-20.jpg";
@@ -2099,6 +2099,7 @@ export default function Khata() {
       <TopBar saving={saving} xp={data.xp} streak={data.streak.count} nextCountryGoal={nextTravelGoal(data)} onOpenLockSetup={() => setLockSetupOpen(true)} />
       <div style={S.body}>
         {tab === "overview" && <OverviewTab data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
+        {tab === "business" && <BusinessTab data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "income" && <IncomeTab data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "expense" && <ExpenseTab data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "funds" && <FundsTab data={data} persist={persist} />}
@@ -2215,6 +2216,7 @@ function TopBar({ saving, xp, streak, nextCountryGoal, onOpenLockSetup }) {
 function BottomNav({ tab, setTab }) {
   const items = [
     { id: "overview", label: "Home", icon: Home },
+    { id: "business", label: "Biz", icon: Briefcase },
     { id: "income", label: "Income", icon: ArrowUpCircle },
     { id: "expense", label: "Expense", icon: ArrowDownCircle },
     { id: "funds", label: "Funds", icon: Wallet },
@@ -4322,6 +4324,209 @@ function IncomeTab({ data, persist, registerActivity, setToast, triggerNoteAnim 
           ]}
         />
       )}
+    </div>
+  );
+}
+
+/* ---------------- Business (business-only income / expense, one-tap add) ---------------- */
+
+const BIZ_INCOME_SOURCES = ["Sourcex Payout", "KicksMachine", "Direct Client", "Other Business"];
+const BIZ_EXPENSE_CATS = ["Sourcing/Business", "Shipping/Logistics", "Packaging", "Business Tools/Software"];
+const BIZ_CHIP_LABEL = { "Sourcing/Business": "Sourcing", "Shipping/Logistics": "Shipping", "Packaging": "Packaging", "Business Tools/Software": "Tools", "Sourcex Payout": "Sourcex", "KicksMachine": "KicksMachine", "Direct Client": "Direct Client", "Other Business": "Other" };
+
+// An entry is "business" if it was saved with scope:"business", or (for older entries without a scope)
+// if its source/category is one of the business ones. Waste entries are never business.
+function entryIsBusiness(e, kind) {
+  if (e.scope) return e.scope === "business";
+  if (kind === "income") return BIZ_INCOME_SOURCES.includes(e.source);
+  if (e.unnecessary) return false;
+  return BIZ_EXPENSE_CATS.includes(e.category);
+}
+
+const bizLS = {
+  get: (k, d) => { try { return localStorage.getItem(k) || d; } catch { return d; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* ignore */ } },
+};
+
+function shiftMonthKey(mk, delta) {
+  const [y, m] = mk.split("-").map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAnim }) {
+  const [mk, setMk] = useState(monthKey(todayISO()));
+  const [kind, setKind] = useState("out"); // in | out
+  const [amount, setAmount] = useState("");
+  const [labelIn, setLabelIn] = useState(() => bizLS.get("biz_last_in", BIZ_INCOME_SOURCES[0]));
+  const [labelOut, setLabelOut] = useState(() => bizLS.get("biz_last_out", BIZ_EXPENSE_CATS[0]));
+  const [note, setNote] = useState("");
+  const [account, setAccount] = useState("none");
+  const [confirmId, setConfirmId] = useState(null);
+
+  const bizIncome = useMemo(() => data.income.filter((e) => entryIsBusiness(e, "income")), [data.income]);
+  const bizExpense = useMemo(() => data.expenses.filter((e) => entryIsBusiness(e, "expense")), [data.expenses]);
+
+  const sumMonth = (arr, key) => arr.filter((e) => monthKey(e.date) === key).reduce((s, e) => s + e.amount, 0);
+  const incomeM = sumMonth(bizIncome, mk);
+  const expenseM = sumMonth(bizExpense, mk);
+  const profitM = incomeM - expenseM;
+  const marginM = incomeM > 0 ? Math.round((profitM / incomeM) * 100) : null;
+  const prevKey = shiftMonthKey(mk, -1);
+  const prevProfit = sumMonth(bizIncome, prevKey) - sumMonth(bizExpense, prevKey);
+  const today = todayISO();
+  const todayProfit = bizIncome.filter((e) => e.date === today).reduce((s, e) => s + e.amount, 0) - bizExpense.filter((e) => e.date === today).reduce((s, e) => s + e.amount, 0);
+
+  const expenseByCat = useMemo(() => {
+    const m = {};
+    bizExpense.filter((e) => monthKey(e.date) === mk).forEach((e) => { m[e.category] = (m[e.category] || 0) + e.amount; });
+    return Object.entries(m).sort((a, b) => b[1] - a[1]);
+  }, [bizExpense, mk]);
+  const incomeBySrc = useMemo(() => {
+    const m = {};
+    bizIncome.filter((e) => monthKey(e.date) === mk).forEach((e) => { m[e.source] = (m[e.source] || 0) + e.amount; });
+    return Object.entries(m).sort((a, b) => b[1] - a[1]);
+  }, [bizIncome, mk]);
+
+  const rows = useMemo(() => {
+    const a = bizIncome.filter((e) => monthKey(e.date) === mk).map((e) => ({ ...e, _k: "in" }));
+    const b = bizExpense.filter((e) => monthKey(e.date) === mk).map((e) => ({ ...e, _k: "out" }));
+    return [...a, ...b].sort((x, y) => y.date.localeCompare(x.date) || y.id - x.id);
+  }, [bizIncome, bizExpense, mk]);
+
+  const save = () => {
+    const amt = parseFloat(amount);
+    if (!amt || amt <= 0) return;
+    const date = todayISO();
+    const isIn = kind === "in";
+    const label = isIn ? labelIn : labelOut;
+    const fundDelta = fundDeltaForAmount(data.funds, amt, isIn ? 1 : -1);
+    const fundBalances = swapFundDelta(data.fundBalances, null, fundDelta);
+    let next;
+    if (isIn) {
+      const entry = { id: Date.now(), amount: amt, source: label, note: note.trim(), date, fundDelta, scope: "business" };
+      next = { ...data, income: [...data.income, entry], fundBalances };
+    } else {
+      const entry = { id: Date.now(), amount: amt, category: label, note: note.trim(), date, unnecessary: false, fine: 0, fundDelta, photo: null, scope: "business" };
+      next = { ...data, expenses: [...data.expenses, entry], fundBalances };
+    }
+    next = registerActivity(next, isIn ? 5 : 3);
+    next = withAccountMovement(next, account, isIn ? "in" : "out", amt, `${isIn ? "Income" : "Expense"} — ${label}`, date);
+    persist(next);
+    triggerNoteAnim(amt, isIn ? "in" : "out");
+    bizLS.set(isIn ? "biz_last_in" : "biz_last_out", label);
+    setAmount("");
+    setNote("");
+    if (mk !== monthKey(date)) setMk(monthKey(date));
+    setToast(`${isIn ? "+" : "−"}${fmt(amt)} BUSINESS ${isIn ? "INCOME" : "EXPENSE"} SAVED`);
+    setTimeout(() => setToast(null), 1400);
+  };
+
+  const remove = (row) => {
+    if (confirmId !== row.id) { setConfirmId(row.id); setTimeout(() => setConfirmId((c) => (c === row.id ? null : c)), 3000); return; }
+    const fundBalances = { ...data.fundBalances };
+    if (row.fundDelta) Object.entries(row.fundDelta).forEach(([fid, a]) => { fundBalances[fid] = (fundBalances[fid] || 0) - a; });
+    persist(row._k === "in"
+      ? { ...data, income: data.income.filter((e) => e.id !== row.id), fundBalances }
+      : { ...data, expenses: data.expenses.filter((e) => e.id !== row.id), fundBalances });
+    setConfirmId(null);
+  };
+
+  const chips = kind === "in" ? BIZ_INCOME_SOURCES : BIZ_EXPENSE_CATS;
+  const label = kind === "in" ? labelIn : labelOut;
+  const setLabel = kind === "in" ? setLabelIn : setLabelOut;
+  const accent = kind === "in" ? T.green : T.orange;
+  const maxBar = Math.max(1, ...expenseByCat.map(([, v]) => v), ...incomeBySrc.map(([, v]) => v));
+
+  return (
+    <div>
+      <div style={S.sectionHeadRow}>
+        <SectionLabel text="BUSINESS" noMargin />
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <button style={S.correctionLink} onClick={() => setMk(shiftMonthKey(mk, -1))}>‹</button>
+          <span style={{ fontSize: 11, fontWeight: 700, color: T.ivory, minWidth: 64, textAlign: "center" }}>{monthLabel(mk).toUpperCase()}</span>
+          <button style={S.correctionLink} onClick={() => setMk(shiftMonthKey(mk, 1))} disabled={mk >= monthKey(todayISO())}>›</button>
+        </div>
+      </div>
+
+      <div style={S.heroCard}>
+        <div style={S.heroLabel}>BUSINESS PROFIT · {monthLabel(mk).toUpperCase()}</div>
+        <div style={{ ...S.heroNum, color: profitM >= 0 ? T.green : T.orange }} className="tnum">{fmtSigned(profitM)}</div>
+        <div style={S.heroSub}>
+          {marginM !== null ? `${marginM}% margin` : "no income yet"} · {prevProfit !== 0 || profitM !== 0 ? `${profitM - prevProfit >= 0 ? "▲" : "▼"} ${fmt(profitM - prevProfit)} vs last month` : "—"} · today {fmtSigned(todayProfit)}
+        </div>
+      </div>
+
+      <div style={{ ...S.statGrid, marginTop: 10 }}>
+        <div style={S.statBox}>
+          <div style={S.statBoxLabel}>INCOME</div>
+          <div style={{ ...S.statBoxNum, color: T.green }} className="tnum">{fmt(incomeM)}</div>
+        </div>
+        <div style={S.statBox}>
+          <div style={S.statBoxLabel}>EXPENSE</div>
+          <div style={{ ...S.statBoxNum, color: T.orange }} className="tnum">{fmt(expenseM)}</div>
+        </div>
+      </div>
+
+      <SectionLabel text="QUICK ADD" />
+      <div style={S.formCard}>
+        <div style={{ ...S.toggleWrap, marginBottom: 4 }}>
+          <button style={{ ...S.toggleBtn, flex: 1, ...(kind === "out" ? { background: T.orange, color: T.bg } : {}) }} onClick={() => setKind("out")}>EXPENSE</button>
+          <button style={{ ...S.toggleBtn, flex: 1, ...(kind === "in" ? { background: T.green, color: T.bg } : {}) }} onClick={() => setKind("in")}>INCOME</button>
+        </div>
+        <AmountInput value={amount} onChange={setAmount} placeholder="₹ amount" style={{ ...S.input, width: "100%", fontSize: 22, fontWeight: 700, padding: "14px 14px" }} />
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
+          {chips.map((c) => (
+            <button key={c} onClick={() => setLabel(c)} style={{ background: label === c ? accent : T.bg, color: label === c ? T.bg : T.ivory, border: `1px solid ${label === c ? accent : T.line}`, borderRadius: T.radiusPill, padding: "8px 13px", fontSize: 11.5, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif" }}>{BIZ_CHIP_LABEL[c] || c}</button>
+          ))}
+        </div>
+        <input type="text" placeholder="note (optional)" value={note} onChange={(e) => setNote(e.target.value)} style={{ ...S.input, width: "100%" }} />
+        <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
+          <span style={{ fontSize: 10, color: T.muted, fontWeight: 700, letterSpacing: "0.04em" }}>PAID VIA</span>
+          {["none", "cash", "bank"].map((a) => (
+            <button key={a} onClick={() => setAccount(a)} style={{ background: account === a ? T.surface : "none", color: account === a ? T.ivory : T.muted, border: `1px solid ${account === a ? T.lineStrong : T.line}`, borderRadius: T.radiusPill, padding: "5px 11px", fontSize: 10.5, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif" }}>{a === "none" ? "—" : a.toUpperCase()}</button>
+          ))}
+        </div>
+        <button style={{ ...S.submitBtnGreen, background: accent, boxShadow: glow(accent, 0.3), opacity: parseFloat(amount) > 0 ? 1 : 0.45 }} className="npop" onClick={save}>
+          SAVE {kind === "in" ? "INCOME" : "EXPENSE"}{parseFloat(amount) > 0 ? ` · ${fmt(parseFloat(amount))}` : ""}
+        </button>
+      </div>
+
+      {(incomeBySrc.length > 0 || expenseByCat.length > 0) && (
+        <>
+          <SectionLabel text="WHERE IT CAME FROM / WENT" />
+          <div style={S.formCard}>
+            {[...incomeBySrc.map(([k, v]) => ({ k, v, c: T.green, sign: "+" })), ...expenseByCat.map(([k, v]) => ({ k, v, c: T.orange, sign: "−" }))].map((r) => (
+              <div key={r.sign + r.k}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, fontWeight: 600, marginBottom: 4 }}>
+                  <span>{r.k}</span><span className="tnum" style={{ color: r.c }}>{r.sign}{fmt(r.v)}</span>
+                </div>
+                <div style={{ height: 5, borderRadius: 3, background: T.bg, overflow: "hidden" }}>
+                  <div style={{ width: `${Math.max(3, (r.v / maxBar) * 100)}%`, height: "100%", background: r.c, borderRadius: 3 }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      <SectionLabel text="THIS MONTH'S BUSINESS ENTRIES" />
+      <div style={S.ledger}>
+        {rows.length === 0 && <EmptyNote text="no business entries this month" />}
+        {rows.map((e) => (
+          <div key={`${e._k}${e.id}`} style={S.ledgerRow}>
+            <div style={S.ledgerDate}>{fmtDateShort(e.date)}</div>
+            <div style={S.ledgerMain}>
+              <div style={S.ledgerCategory}>{e._k === "in" ? e.source : e.category}</div>
+              {e.note && <div style={S.ledgerNote}>{e.note}</div>}
+            </div>
+            <div style={{ ...S.ledgerAmt, color: e._k === "in" ? T.green : T.orange }} className="tnum">{e._k === "in" ? "+" : "−"}{fmt(e.amount)}</div>
+            <button style={S.deleteBtn} onClick={() => remove(e)} title="delete">
+              {confirmId === e.id ? <span style={{ fontSize: 9, color: T.orange, fontWeight: 700 }}>SURE?</span> : <Trash2 size={13} color={T.muted} />}
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -7459,7 +7664,7 @@ const S = {
   bottomNav: { position: "fixed", bottom: 0, left: 0, right: 0, background: "rgba(20,20,25,0.85)", backdropFilter: "blur(20px) saturate(150%)", WebkitBackdropFilter: "blur(20px) saturate(150%)", borderTop: `1px solid ${T.line}`, boxShadow: "0 -8px 32px rgba(0,0,0,0.35)", display: "flex", justifyContent: "space-around", padding: "10px 4px calc(env(safe-area-inset-bottom, 4px) + 10px) 4px", zIndex: 20 },
   navBtn: { background: "none", border: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, flex: 1, padding: "2px 0" },
   navIconWrap: { width: 30, height: 30, borderRadius: T.radiusMd, display: "flex", alignItems: "center", justifyContent: "center", transition: "background 0.15s ease, box-shadow 0.15s ease" },
-  navLabel: { fontSize: 9, fontWeight: 700, letterSpacing: "0.02em" },
+  navLabel: { fontSize: 8.5, fontWeight: 700, letterSpacing: "0" },
 
   body: { padding: "18px 16px 0 16px", maxWidth: 520, margin: "0 auto" },
 
