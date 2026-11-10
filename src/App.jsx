@@ -8,7 +8,7 @@ import {
   Plus, Trash2, X, Loader2, Settings2, Check, Target, Flame, Award,
   ArrowDownCircle, ArrowUpCircle, Home, Wallet, ListChecks, Pin, Landmark,
   Calculator, Delete, RefreshCw, Layers, Trophy, Swords, Lock, BarChart3,
-  FileDown, FileSpreadsheet, Printer, Mic, Zap, Pencil, TrendingUp, PackageCheck, Briefcase, Receipt,
+  FileDown, FileSpreadsheet, Printer, Mic, Zap, Pencil, TrendingUp, PackageCheck, Briefcase, Receipt, ShieldCheck,
 } from "lucide-react";
 import rupee10 from "./assets/notes/rupee-10.jpg";
 import rupee20 from "./assets/notes/rupee-20.jpg";
@@ -43,11 +43,44 @@ function useFonts() {
 
 const SUPABASE_URL = "https://qzripzgbstvxkfobzhyv.supabase.co";
 const SUPABASE_KEY = "sb_publishable_-EA-q_dacUuWovbrCW5XVw_pPZ2vK_O";
-const SUPABASE_HEADERS = { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" };
+
+// ---- sign-in (Supabase Auth, same owner account as the Luxella portal) ----
+// When signed in, every request carries the user's token, so the data can be locked to the owner
+// instead of being readable by anyone holding the public key. Without a session the app falls back
+// to the public key (which only works while the tables still allow it).
+const AUTH_KEY = "money_auth";
+let authSession = (() => { try { return JSON.parse(localStorage.getItem(AUTH_KEY) || "null"); } catch { return null; } })();
+const saveAuth = (sess) => { authSession = sess; try { if (sess) localStorage.setItem(AUTH_KEY, JSON.stringify(sess)); else localStorage.removeItem(AUTH_KEY); } catch { /* ignore */ } };
+async function authRequest(grant, body) {
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=${grant}`, { method: "POST", headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || !j.access_token) throw new Error(j.error_description || j.msg || j.message || `sign-in failed (${res.status})`);
+  return { access_token: j.access_token, refresh_token: j.refresh_token, expires_at: Date.now() + (j.expires_in || 3600) * 1000, email: (j.user && j.user.email) || body.email || (authSession && authSession.email) || "" };
+}
+let refreshingAuth = null;
+async function sbHeaders(extra) {
+  if (authSession && authSession.expires_at - Date.now() < 60000) {
+    refreshingAuth = refreshingAuth || authRequest("refresh_token", { refresh_token: authSession.refresh_token })
+      .then(saveAuth)
+      .catch((e) => { if (/invalid|not found|expired|revoked|400|401/i.test(String(e.message))) saveAuth(null); })
+      .finally(() => { refreshingAuth = null; });
+    await refreshingAuth;
+  }
+  return { apikey: SUPABASE_KEY, Authorization: `Bearer ${(authSession && authSession.access_token) || SUPABASE_KEY}`, "Content-Type": "application/json", ...(extra || {}) };
+}
+async function signInOwner(email, password) {
+  saveAuth(await authRequest("password", { email: email.trim().toLowerCase(), password }));
+  return authSession;
+}
+// tells the server this device really works signed-in (so the public access can be switched off safely)
+async function touchAuth() {
+  if (!authSession) return;
+  try { await fetch(`${SUPABASE_URL}/rest/v1/rpc/khata_touch_auth`, { method: "POST", headers: await sbHeaders(), body: JSON.stringify({ p_ua: (navigator.userAgent || "").slice(0, 180) }) }); } catch { /* ignore */ }
+}
 
 // Returns { data, updatedAt } — updatedAt is null when the row doesn't exist yet (first-ever load).
 async function loadFromSupabase() {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/khata_state?id=eq.default&select=data,updated_at`, { headers: SUPABASE_HEADERS });
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/khata_state?id=eq.default&select=data,updated_at`, { headers: await sbHeaders() });
   if (!res.ok) throw new Error(`load failed: ${res.status}`);
   const rows = await res.json();
   return Array.isArray(rows) && rows[0] ? { data: rows[0].data, updatedAt: rows[0].updated_at } : { data: null, updatedAt: null };
@@ -63,7 +96,7 @@ async function saveToSupabase(data, expectedUpdatedAt) {
     // first-ever write for this install — nothing to conflict with yet
     const res = await fetch(`${SUPABASE_URL}/rest/v1/khata_state`, {
       method: "POST",
-      headers: { ...SUPABASE_HEADERS, Prefer: "resolution=merge-duplicates" },
+      headers: await sbHeaders({ Prefer: "resolution=merge-duplicates" }),
       body: JSON.stringify({ id: "default", data, updated_at: updatedAt }),
     });
     if (!res.ok) throw new Error(`save failed: ${res.status}`);
@@ -73,7 +106,7 @@ async function saveToSupabase(data, expectedUpdatedAt) {
     `${SUPABASE_URL}/rest/v1/khata_state?id=eq.default&updated_at=eq.${encodeURIComponent(expectedUpdatedAt)}`,
     {
       method: "PATCH",
-      headers: { ...SUPABASE_HEADERS, Prefer: "return=representation" },
+      headers: await sbHeaders({ Prefer: "return=representation" }),
       body: JSON.stringify({ data, updated_at: updatedAt }),
     }
   );
@@ -84,7 +117,7 @@ async function saveToSupabase(data, expectedUpdatedAt) {
 }
 
 async function fetchPendingSms() {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/khata_sms_inbox?status=eq.pending&order=created_at.desc&select=*`, { headers: SUPABASE_HEADERS });
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/khata_sms_inbox?status=eq.pending&order=created_at.desc&select=*`, { headers: await sbHeaders() });
   if (!res.ok) throw new Error(`sms fetch failed: ${res.status}`);
   return res.json();
 }
@@ -92,7 +125,7 @@ async function fetchPendingSms() {
 async function updateSmsStatus(id, status) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/khata_sms_inbox?id=eq.${id}`, {
     method: "PATCH",
-    headers: { ...SUPABASE_HEADERS, Prefer: "return=minimal" },
+    headers: await sbHeaders({ Prefer: "return=minimal" }),
     body: JSON.stringify({ status }),
   });
   if (!res.ok) throw new Error(`sms update failed: ${res.status}`);
@@ -2033,6 +2066,8 @@ export default function Khata() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState("overview");
+  const [gate, setGate] = useState(null); // null | "login" | "noaccess" | "error" — shown instead of the app
+  const [accountOpen, setAccountOpen] = useState(false);
   const [scopeMode, setScopeModeRaw] = useState(() => { const m = bizLS.get("money_scope_mode", "all"); return ["all", "personal", "business"].includes(m) ? m : "all"; });
   const setScopeMode = (m) => { setScopeModeRaw(m); bizLS.set("money_scope_mode", m); if (NAV_BY_MODE[m] && !NAV_BY_MODE[m].includes(tab)) setTab("overview"); };
   const [toast, setToast] = useState(null);
@@ -2053,7 +2088,9 @@ export default function Khata() {
     (async () => {
       try {
         const remote = await loadFromSupabase();
-        const loaded = remote.data || emptyData();
+        if (!remote.data) { setGate(authSession ? "noaccess" : "login"); return; }
+        touchAuth();
+        const loaded = remote.data;
         loaded.goals = loaded.goals || [];
         loaded.receivables = loaded.receivables || [];
         loaded.payables = loaded.payables || [];
@@ -2094,10 +2131,8 @@ export default function Khata() {
         lastUpdatedAtRef.current = remote.updatedAt;
         setData(loaded);
       } catch {
-        const empty = emptyData();
-        dataRef.current = empty;
-        lastUpdatedAtRef.current = null;
-        setData(empty);
+        // could not load — do NOT start from empty data (the next save would overwrite the real books)
+        setGate("error");
       } finally {
         setLoading(false);
       }
@@ -2272,6 +2307,8 @@ export default function Khata() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, loading]);
 
+  if (gate) return <AuthScreen mode={gate} />;
+
   if (loading || !data) {
     return (
       <div style={{ ...S.app, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -2331,7 +2368,7 @@ export default function Khata() {
         }
       `}</style>
 
-      <TopBar saving={saving} xp={data.xp} streak={data.streak.count} nextCountryGoal={nextTravelGoal(data)} onOpenLockSetup={() => setLockSetupOpen(true)} />
+      <TopBar saving={saving} xp={data.xp} streak={data.streak.count} nextCountryGoal={nextTravelGoal(data)} onOpenLockSetup={() => setLockSetupOpen(true)} onOpenAccount={() => setAccountOpen(true)} />
       <div style={S.body}>
         <ScopeBar mode={scopeMode} setMode={setScopeMode} untagged={untaggedCount} />
         {tab === "overview" && <OverviewTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
@@ -2366,6 +2403,17 @@ export default function Khata() {
         />
       )}
       {lockSetupOpen && <PinSetupModal data={data} persist={persist} onClose={() => setLockSetupOpen(false)} />}
+      {accountOpen && (
+        <div style={S.calcOverlay} onClick={() => setAccountOpen(false)}>
+          <div style={S.calcModal} onClick={(e) => e.stopPropagation()}>
+            <div style={S.calcHeader}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: T.ivory }}>ACCOUNT</div>
+              <button style={S.calcCloseBtn} onClick={() => setAccountOpen(false)}><X size={16} color={T.ivory} /></button>
+            </div>
+            <SignInBox />
+          </div>
+        </div>
+      )}
       {toast && <div style={S.toast}>{toast}</div>}
       {conflictNotice && <div style={S.conflictToast}>{conflictNotice}</div>}
     </div>
@@ -2421,7 +2469,7 @@ function GoalTimeline({ targetDate, remaining, netProfitNeeded, salesNeeded }) {
   );
 }
 
-function TopBar({ saving, xp, streak, nextCountryGoal, onOpenLockSetup }) {
+function TopBar({ saving, xp, streak, nextCountryGoal, onOpenLockSetup, onOpenAccount }) {
   const level = Math.floor(xp / 100) + 1;
   const now = useLiveClock();
   const dayName = now.toLocaleDateString("en-IN", { weekday: "long" });
@@ -2442,6 +2490,7 @@ function TopBar({ saving, xp, streak, nextCountryGoal, onOpenLockSetup }) {
         <div style={{ ...S.saveDot, opacity: saving ? 1 : 0 }}>SAVING…</div>
       </div>
       <div style={S.headerStats}>
+        <button style={{ ...S.lockIconBtn, ...(authSession ? { borderColor: `${T.green}66` } : { borderColor: `${T.orange}88` }) }} onClick={onOpenAccount} title="account"><ShieldCheck size={13} color={authSession ? T.green : T.orange} /></button>
         <button style={S.lockIconBtn} onClick={onOpenLockSetup}><Lock size={13} color={T.muted} /></button>
         <span style={S.statChip}><Award size={11} color={T.green} /> LV.{level}</span>
         <span style={S.statChip}><Flame size={11} color={T.orange} /> {streak}</span>
@@ -2855,7 +2904,7 @@ function BrokerHoldingsSection({ data, persist }) {
     setLoading(true);
     setError(null);
     try {
-      const sessionRes = await fetch(`${SUPABASE_URL}/rest/v1/khata_broker_sessions?broker=eq.kite&select=access_token`, { headers: SUPABASE_HEADERS });
+      const sessionRes = await fetch(`${SUPABASE_URL}/rest/v1/khata_broker_sessions?broker=eq.kite&select=access_token`, { headers: await sbHeaders() });
       const sessionRows = await sessionRes.json();
       const token = sessionRows[0]?.access_token;
       if (!token) throw new Error("Not connected yet — tap Connect Kite first.");
@@ -2876,7 +2925,7 @@ function BrokerHoldingsSection({ data, persist }) {
     setLoading(true);
     setError(null);
     try {
-      const sessionRes = await fetch(`${SUPABASE_URL}/rest/v1/khata_broker_sessions?broker=eq.motilal&select=access_token`, { headers: SUPABASE_HEADERS });
+      const sessionRes = await fetch(`${SUPABASE_URL}/rest/v1/khata_broker_sessions?broker=eq.motilal&select=access_token`, { headers: await sbHeaders() });
       const sessionRows = await sessionRes.json();
       const token = sessionRows[0]?.access_token;
       if (!token) throw new Error("Not connected yet — tap Connect Rise first.");
@@ -5008,6 +5057,58 @@ function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAni
           ]}
         />
       )}
+    </div>
+  );
+}
+
+
+/* ---------------- Sign-in ---------------- */
+
+function SignInBox() {
+  const [email, setEmail] = useState((authSession && authSession.email) || "");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const go = async () => {
+    if (!email.trim() || !password || busy) return;
+    setBusy(true); setErr(null);
+    try { await signInOwner(email, password); await touchAuth(); window.location.reload(); }
+    catch (e) { setErr(/invalid/i.test(String(e.message)) ? "Email ya password galat hai." : String(e.message)); setBusy(false); }
+  };
+  if (authSession) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.5 }}><span style={{ color: T.green }}>✓ Signed in</span> — {authSession.email}</div>
+        <div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.5 }}>Is phone par app ab tumhare login se chal raha hai.</div>
+        <button style={{ ...S.correctionLink, alignSelf: "flex-start" }} onClick={() => { saveAuth(null); window.location.reload(); }}>SIGN OUT</button>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.5 }}>Wahi email aur password jo Luxella portal (admin) me chalta hai. Ek baar login karo, phir yaad rahega.</div>
+      <input type="email" autoComplete="username" placeholder="email" value={email} onChange={(e) => setEmail(e.target.value)} style={{ ...S.input, width: "100%" }} />
+      <input type="password" autoComplete="current-password" placeholder="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} style={{ ...S.input, width: "100%" }} />
+      {err && <div style={{ fontSize: 11, color: T.orange, fontWeight: 700 }}>{err}</div>}
+      <button style={{ ...S.submitBtnGreen, opacity: busy ? 0.6 : 1 }} className="npop" onClick={go} disabled={busy}>{busy ? "SIGNING IN…" : "SIGN IN"}</button>
+    </div>
+  );
+}
+
+function AuthScreen({ mode }) {
+  return (
+    <div style={{ ...S.app, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ ...S.formCard, width: "min(420px, 100%)", gap: 12 }}>
+        <div style={S.wordmark}>MONEY</div>
+        {mode === "error" && (
+          <>
+            <div style={{ fontSize: 12, color: T.orange, fontWeight: 700, lineHeight: 1.5 }}>Data load nahi hua (network?). Tumhara data safe hai — kuch badla nahi gaya.</div>
+            <button style={S.submitBtnGreen} className="npop" onClick={() => window.location.reload()}>RETRY</button>
+          </>
+        )}
+        {mode === "noaccess" && <div style={{ fontSize: 12, color: T.orange, fontWeight: 700, lineHeight: 1.5 }}>Is login ko is data ka access nahi hai. Owner wale email se login karo.</div>}
+        {mode !== "error" && (mode === "noaccess" ? <button style={S.correctionLink} onClick={() => { saveAuth(null); window.location.reload(); }}>SIGN OUT AND USE ANOTHER EMAIL</button> : <SignInBox />)}
+      </div>
     </div>
   );
 }

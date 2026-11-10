@@ -231,3 +231,13 @@ Every due and every sale is its own entry and is settled on its own, fully or pa
 - Sales has the same party-wise view (default) plus the flat list; split payments go through
   `applySalePayment` per sale. James's `settle_due` uses `applyDueSettlement`, rolling over a party's
   entries oldest first. Use `nextId()` for rows created in the same tick.
+
+## Sign-in and data safety (Nov 2026)
+
+- The web app can sign in with Supabase Auth (the same owner account as the Luxella portal):
+  `signInOwner`, session in `localStorage.money_auth`, `sbHeaders()` adds the user's token to every
+  request and refreshes it. Owner-only RLS policies exist (`lx_is_owner()`); the old anon policies are
+  still in place until the owner has signed in on his devices and the bots have a server-side key.
+- The app never starts from empty data any more: if the row cannot be loaded it shows `AuthScreen`
+  (login / no access / retry) instead, because saving empty data would overwrite the real books.
+- `khata_touch_auth()` records that a signed-in device loaded successfully (`khata_auth_log`).
