@@ -1853,6 +1853,8 @@ export default function Khata() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState("overview");
+  const [scopeMode, setScopeModeRaw] = useState(() => { const m = bizLS.get("money_scope_mode", "all"); return ["all", "personal", "business"].includes(m) ? m : "all"; });
+  const setScopeMode = (m) => { setScopeModeRaw(m); bizLS.set("money_scope_mode", m); };
   const [toast, setToast] = useState(null);
   const [noteAnim, setNoteAnim] = useState(null);
   const [calcOpen, setCalcOpen] = useState(false);
@@ -1958,6 +1960,11 @@ export default function Khata() {
     }
     return { ...base, xp: (base.xp || 0) + xpGain, streak };
   }, []);
+
+  // scoped view of the data for the tabs, plus a persist that restores the rows hidden by the view
+  const viewData = useMemo(() => scopeView(data, scopeMode), [data, scopeMode]);
+  const scopedPersist = useCallback((next) => persist(scopeMerge(dataRef.current, next, scopeMode)), [persist, scopeMode]);
+  const untaggedCount = useMemo(() => (data ? data.income.filter((e) => entryClass(e, "income") === "unsorted").length + data.expenses.filter((e) => entryClass(e, "expense") === "unsorted").length : 0), [data]);
 
   useEffect(() => {
     if (!data) return;
@@ -2144,18 +2151,19 @@ export default function Khata() {
 
       <TopBar saving={saving} xp={data.xp} streak={data.streak.count} nextCountryGoal={nextTravelGoal(data)} onOpenLockSetup={() => setLockSetupOpen(true)} />
       <div style={S.body}>
-        {tab === "overview" && <OverviewTab data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
+        <ScopeBar mode={scopeMode} setMode={setScopeMode} untagged={untaggedCount} />
+        {tab === "overview" && <OverviewTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "business" && <BusinessTab data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
-        {tab === "income" && <IncomeTab data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
-        {tab === "expense" && <ExpenseTab data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
-        {tab === "funds" && <FundsTab data={data} persist={persist} />}
-        {tab === "goals" && <GoalsTab data={data} persist={persist} />}
-        {tab === "dues" && <DuesTab data={data} persist={persist} />}
-        {tab === "accounts" && <AccountsTab data={data} persist={persist} />}
-        {tab === "investments" && <InvestmentsTab data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
-        {tab === "pool" && <ExpensePoolTab data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
-        {tab === "analytics" && <AnalyticsTab data={data} persist={persist} />}
-        {tab === "hustle" && <HustleTab data={data} persist={persist} />}
+        {tab === "income" && <IncomeTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
+        {tab === "expense" && <ExpenseTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
+        {tab === "funds" && <FundsTab data={viewData} persist={scopedPersist} />}
+        {tab === "goals" && <GoalsTab data={viewData} persist={scopedPersist} />}
+        {tab === "dues" && <DuesTab data={viewData} persist={scopedPersist} />}
+        {tab === "accounts" && <AccountsTab data={viewData} persist={scopedPersist} />}
+        {tab === "investments" && <InvestmentsTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
+        {tab === "pool" && <ExpensePoolTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
+        {tab === "analytics" && <AnalyticsTab data={viewData} persist={scopedPersist} />}
+        {tab === "hustle" && <HustleTab data={viewData} persist={scopedPersist} />}
       </div>
 
       <BottomNav tab={tab} setTab={setTab} />
@@ -4398,6 +4406,71 @@ function entryClass(e, kind) {
   return "unsorted";
 }
 const entryIsBusiness = (e, kind) => entryClass(e, kind) === "business";
+
+// ---- global ALL / PERSONAL / BUSINESS view ----
+// Each of these arrays is split by scope. A scoped view shows only its own rows; scopeMerge() puts the
+// hidden rows back before anything is saved, so working in one view can never delete the other view's data.
+const dueScope = (d) => (d.purpose === "business" ? "business" : "personal");
+const investmentScope = (i) => (i.investmentType === "Inventory Stock" || i.source === "inventory_cashout" || String(i.status || "").startsWith("pending_landing") ? "business" : "personal");
+const SCOPED_KEYS = {
+  income: (e) => entryClass(e, "income"),
+  expenses: (e) => entryClass(e, "expense"),
+  receivables: dueScope,
+  payables: dueScope,
+  investments: investmentScope,
+};
+function scopeView(data, mode) {
+  if (!data || mode === "all") return data;
+  const out = { ...data };
+  Object.entries(SCOPED_KEYS).forEach(([k, cls]) => { out[k] = (data[k] || []).filter((e) => cls(e) === mode); });
+  return out;
+}
+// new rows created while a scoped view is active belong to that view
+function stampScope(key, e, mode) {
+  if (key === "income" || key === "expenses") return e.scope || e.unnecessary ? e : { ...e, scope: mode };
+  if (key === "receivables" || key === "payables") return { ...e, purpose: mode };
+  return e;
+}
+function scopeMerge(full, next, mode) {
+  if (mode === "all" || !full) return next;
+  const out = { ...next };
+  Object.entries(SCOPED_KEYS).forEach(([k, cls]) => {
+    const fullArr = full[k] || [];
+    const nextArr = next[k] || [];
+    const nextById = new Map(nextArr.map((e) => [e.id, e]));
+    const fullIds = new Set(fullArr.map((e) => e.id));
+    const merged = [];
+    fullArr.forEach((e) => {
+      if (cls(e) !== mode) merged.push(e);                       // hidden in this view — always kept
+      else if (nextById.has(e.id)) merged.push(nextById.get(e.id)); // visible — kept/edited (dropped only if the view removed it)
+    });
+    nextArr.forEach((e) => { if (!fullIds.has(e.id)) merged.push(stampScope(k, e, mode)); });
+    out[k] = merged;
+  });
+  return out;
+}
+const SCOPE_MODES = [
+  { id: "all", label: "ALL" },
+  { id: "personal", label: "PERSONAL" },
+  { id: "business", label: "BUSINESS" },
+];
+function ScopeBar({ mode, setMode, untagged }) {
+  const color = { all: T.ivory, personal: T.purple, business: T.blue };
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ ...S.toggleWrap, marginBottom: 0 }}>
+        {SCOPE_MODES.map((m) => (
+          <button key={m.id} onClick={() => setMode(m.id)} style={{ ...S.toggleBtn, flex: 1, padding: "10px 6px", ...(mode === m.id ? { background: color[m.id], color: T.bg } : {}) }}>{m.label}</button>
+        ))}
+      </div>
+      {mode !== "all" && (
+        <div style={{ fontSize: 9.5, color: T.muted, fontWeight: 700, letterSpacing: "0.04em", marginTop: 6, textAlign: "center" }}>
+          SHOWING {mode.toUpperCase()} ONLY · NEW ENTRIES SAVE AS {mode.toUpperCase()}{untagged > 0 ? ` · ${untagged} UNTAGGED IN BIZ TAB` : ""}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const bizLS = {
   get: (k, d) => { try { return localStorage.getItem(k) || d; } catch { return d; } },

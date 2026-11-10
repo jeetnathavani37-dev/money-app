@@ -171,3 +171,12 @@ Income/expense entries may carry `scope: "business" | "personal"`. Older entries
 The Biz tab (`BusinessTab`) reads only business entries and its quick-add always writes `scope: "business"`.
 The bots' `log_entry` tool takes an optional `scope` and normalises free-text labels onto the canonical
 ones above (`normalizeBizLabel` in `api/_lib/money-agent.js`), so Telegram/WhatsApp entries group correctly.
+
+## Global ALL / PERSONAL / BUSINESS view
+
+`ScopeBar` (top of every tab) sets `scopeMode`. In a scoped mode the tabs receive `viewData` =
+`scopeView(data, mode)` (income, expenses, receivables, payables, investments filtered by scope) and
+`scopedPersist`, which runs `scopeMerge()` to put the hidden rows back before saving and stamps new
+rows with the active scope. Never pass a filtered `data` together with the raw `persist` — that would
+delete the hidden rows. `BusinessTab`, James, voice and the calculator always get the full data.
+Fund balances, accounts, goals and net worth are shared and not split by scope.
