@@ -1472,6 +1472,9 @@ ${openSales.join("\n") || "none"}
 ${[...openRecv, ...openPay].join("\n") || "none"}
 === ORDERS WAITING TO LAND === ${pendingOrders.join(", ") || "none"}
 
+=== ALERTS THE APP IS SHOWING HIM RIGHT NOW (use these when he asks what needs attention / aaj kya karna hai) ===
+${buildInsights(data, today).slice(0, 12).map((x) => `- ${x.text}${x.sub ? ` (${x.sub})` : ""}`).join("\n") || "nothing needs attention"}
+
 === BOOKS (for answering questions) ===
 Monthly: 
 ${B.monthLines.join("\n")}
@@ -2373,6 +2376,7 @@ export default function Khata() {
       <TopBar saving={saving} xp={data.xp} streak={data.streak.count} nextCountryGoal={nextTravelGoal(data)} onOpenLockSetup={() => setLockSetupOpen(true)} onOpenAccount={() => setAccountOpen(true)} />
       <div style={S.body}>
         <ScopeBar mode={scopeMode} setMode={setScopeMode} untagged={untaggedCount} />
+        {tab === "overview" && <SmartFeed data={data} mode={scopeMode} setTab={(t) => { if (!NAV_BY_MODE[scopeMode] || NAV_BY_MODE[scopeMode].includes(t)) setTab(t); else { setScopeMode("all"); setTab(t); } }} setToast={setToast} />}
         {tab === "overview" && <OverviewTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "business" && <BusinessTab data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "sales" && <SalesTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
@@ -5366,6 +5370,19 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
   const [alloc, setAlloc] = useState(null); // party name
 
   const sales = data.sales || [];
+  // what we already know about a buyer, to fill the type and show how they have paid before
+  const partyNames = useMemo(() => [...new Set([...(data.sales || []).map((x) => x.party), ...(data.receivables || []).map((r) => r.party)].filter(Boolean))].sort(), [data.sales, data.receivables]);
+  const knownParty = (name) => {
+    const q = String(name || "").trim().toLowerCase();
+    if (!q) return null;
+    const arr = (data.sales || []).filter((x) => (x.party || "").trim().toLowerCase() === q);
+    if (!arr.length) return null;
+    const last = arr[arr.length - 1];
+    const paid = arr.filter((x) => saleBalance(x) <= 0 && (x.payments || []).length);
+    const avg = paid.length ? Math.round(paid.reduce((a, x) => a + Math.max(0, dayDiff(x.date, x.payments[x.payments.length - 1].date)), 0) / paid.length) : null;
+    const open = arr.filter((x) => saleBalance(x) > 0);
+    return { channel: last.channel, hint: `Purana buyer · ${last.channel} · ${arr.length} sale${avg !== null ? ` · avg ${avg} din me poora deta hai` : ""}${open.length ? ` · abhi ${fmt(open.reduce((a, x) => a + saleBalance(x), 0))} baaki hai` : ""}` };
+  };
   const mk = monthKey(today);
   const out = useMemo(() => salesOutstanding(data, today), [data, today]);
   const soldThisMonth = sales.filter((s) => monthKey(s.date) === mk).reduce((a, s) => a + s.saleValue, 0);
@@ -5503,7 +5520,9 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
 
       {showForm && (
         <div style={S.formCard}>
-          <input type="text" placeholder="kisko becha (name)" value={form.party} onChange={(e) => setForm({ ...form, party: e.target.value })} style={{ ...S.input, width: "100%" }} />
+          <input type="text" list="known-parties" placeholder="kisko becha (name)" value={form.party} onChange={(e) => { const v = e.target.value; const k = knownParty(v); setForm({ ...form, party: v, ...(k && k.channel ? { channel: k.channel } : {}) }); }} style={{ ...S.input, width: "100%" }} />
+          <datalist id="known-parties">{partyNames.map((n) => <option key={n} value={n} />)}</datalist>
+          {knownParty(form.party) && <div style={{ fontSize: 10, color: T.blue, fontWeight: 700 }}>{knownParty(form.party).hint}</div>}
           <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
             {SALE_TYPES.map((t) => <button key={t} onClick={() => setForm({ ...form, channel: t })} style={chip(form.channel === t, SALE_TYPE_COLOR[t])}>{t.toUpperCase()}</button>)}
           </div>
@@ -6237,6 +6256,143 @@ function CashbackCard({ data, persist, setToast, triggerNoteAnim }) {
         ))}
       </div>
     </>
+  );
+}
+
+/* ---------------- Smart feed: the app reads the books and says what needs attention ---------------- */
+
+// Every insight is computed from the real data with fixed rules (no AI, no guessing):
+// { id, scope: "business" | "personal" | "all", level: 3 urgent | 2 watch | 1 info | 0 good, text, sub, tab, copy }
+function buildInsights(data, today) {
+  const out = [];
+  const add = (x) => out.push(x);
+  const cfg = bizSettings(data);
+  const days = (from, to) => dayDiff(from, to);
+  const mk = monthKey(today);
+
+  // --- money that should have come in ---
+  const so = salesOutstanding(data, today);
+  const byParty = {};
+  so.open.forEach((x) => { (byParty[x.party] = byParty[x.party] || []).push(x); });
+  Object.entries(byParty).forEach(([party, arr]) => {
+    const late = arr.filter((x) => saleStatus(x, today) === "overdue");
+    if (late.length) {
+      const oldest = late.reduce((a, x) => (x.dueDate < a.dueDate ? x : a));
+      add({ id: `late-${party}`, scope: "business", level: 3, tab: "sales", copy: saleReminderText(oldest),
+        text: `${party} ka ${fmt(late.reduce((a, x) => a + saleBalance(x), 0))} late hai`, sub: `${late.length} entr${late.length === 1 ? "y" : "ies"} · sabse purani ${days(oldest.dueDate, today)} din late — reminder bhejo` });
+    }
+    const soon = arr.filter((x) => x.dueDate && x.dueDate >= today && days(today, x.dueDate) <= 3);
+    if (soon.length) add({ id: `soon-${party}`, scope: "business", level: 1, tab: "sales", text: `${party} se ${fmt(soon.reduce((a, x) => a + saleBalance(x), 0))} ${days(today, soon[0].dueDate) === 0 ? "aaj" : `${days(today, soon[0].dueDate)} din me`} aana hai`, sub: "aa jaye to Sales me 'Paisa aaya' daba dena" });
+    const undated = arr.filter((x) => !x.dueDate && days(x.date, today) >= 14);
+    if (undated.length) add({ id: `nodate-${party}`, scope: "business", level: 2, tab: "sales", text: `${party} ka ${fmt(undated.reduce((a, x) => a + saleBalance(x), 0))} bina due date ke pada hai`, sub: `${days(undated.reduce((a, x) => (x.date < a.date ? x : a)).date, today)} din ho gaye — date pooch ke daal do` });
+  });
+  // one buyer holding most of the outstanding money
+  const parties = Object.entries(byParty).map(([p2, arr]) => [p2, arr.reduce((a, x) => a + saleBalance(x), 0)]).sort((a, b) => b[1] - a[1]);
+  if (parties.length >= 2 && so.total > 0 && parties[0][1] / so.total >= 0.6) add({ id: "concentration", scope: "business", level: 1, tab: "sales", text: `Lene wale paise ka ${Math.round((parties[0][1] / so.total) * 100)}% sirf ${parties[0][0]} par atka hai`, sub: `${fmt(parties[0][1])} of ${fmt(so.total)} — ek hi party par zyada nirbhar` });
+
+  // --- dues ---
+  (data.receivables || []).filter((r) => r.status === "pending" && r.dueDate && r.dueDate < today).forEach((r) => add({ id: `rdue-${r.id}`, scope: dueScope(r), level: 3, tab: "dues", text: `${r.party} se ${fmt(r.amount)} lena tha — ${days(r.dueDate, today)} din late`, sub: r.note || "Dues me dekho" }));
+  (data.payables || []).filter((r) => r.status === "pending").forEach((r) => {
+    const age = days(new Date(r.id).toISOString().slice(0, 10), today);
+    if (r.dueDate && r.dueDate < today) add({ id: `pdue-${r.id}`, scope: dueScope(r), level: 3, tab: "dues", text: `${r.party} ko ${fmt(r.amount)} dena tha — ${days(r.dueDate, today)} din late`, sub: r.note || "Dues me dekho" });
+    else if (!r.dueDate && age >= 15) add({ id: `pold-${r.id}`, scope: dueScope(r), level: 2, tab: "dues", text: `${r.party} ko ${fmt(r.amount)} dena ${age} din se baaki hai`, sub: r.note || "de diya ho to Dues me 'Paisa diya' daba do" });
+  });
+
+  // --- stock and orders ---
+  (data.investments || []).forEach((i) => {
+    if (!i.date) return;
+    const age = days(i.date, today);
+    if (i.investmentType === "Inventory Stock" && i.status === "in_stock" && age >= 30) add({ id: `stock-${i.id}`, scope: "business", level: 2, tab: "investments", text: `${i.name} ${age} din se stock me pada hai`, sub: `${fmt(i.amount)} atka hai — relist karo ya price ghatao` });
+    if (String(i.status || "").startsWith("pending_landing") && age >= 21) add({ id: `transit-${i.id}`, scope: "business", level: 2, tab: "investments", text: `${i.name} ${age} din se raaste me hai`, sub: "reshipper se poocho — itne din me aa jaana chahiye tha" });
+  });
+
+  // --- cashback ---
+  (data.cashbacks || []).filter((c) => c.status !== "paid").forEach((c) => {
+    const age = days(c.date, today);
+    if (c.status === "pending" && age >= 45) add({ id: `cb-${c.id}`, scope: "business", level: 2, tab: "business", text: `${c.site}: ${c.store} ka $${c.cbUsd.toFixed(2)} cashback ${age} din se pending`, sub: "site par check karo — na dikhe to missing-cashback claim daalo" });
+    if (c.status === "confirmed" && age >= 30) add({ id: `cbc-${c.id}`, scope: "business", level: 1, tab: "business", text: `${c.site}: $${c.cbUsd.toFixed(2)} confirmed hai, nikaala nahi`, sub: "payout request daal do" });
+  });
+
+  // --- the month's books ---
+  const st = buildStatement(data, mk);
+  if (st.revenue > 0 && st.goods === 0) add({ id: `nocost-${mk}`, scope: "business", level: 2, tab: "business", text: `Is mahine ${fmt(st.revenue)} aaya par maal ka kharcha 0 likha hai`, sub: "kharcha log nahi hua to profit asli se zyada dikhega" });
+  (data.sales || []).filter((x) => monthKey(x.date) === mk && x.cost && x.cost > 0).forEach((x) => {
+    const m = ((x.saleValue - x.cost) / x.cost) * 100;
+    if (m < cfg.minMargin) add({ id: `thin-${x.id}`, scope: "business", level: 2, tab: "sales", text: `${x.party}${x.item ? ` — ${x.item}` : ""}: margin sirf ${m.toFixed(1)}%`, sub: `tumhara minimum ${cfg.minMargin}% hai · profit ${fmtSigned(x.saleValue - x.cost)}` });
+  });
+  const target = data.profitTargets?.monthly || 0;
+  const day = Number(today.slice(8, 10));
+  const [yy, mm] = mk.split("-").map(Number);
+  const dim = new Date(yy, mm, 0).getDate();
+  if (target > 0 && day >= 5) {
+    const pace = (st.net / day) * dim;
+    if (st.net >= target) add({ id: `target-hit-${mk}`, scope: "business", level: 0, tab: "business", text: `Mahine ka target poora — ${fmt(st.net)} profit`, sub: `target ${fmt(target)} tha` });
+    else if (pace < target * 0.7) add({ id: `target-behind-${mk}`, scope: "business", level: 2, tab: "business", text: `Target se peeche: isi raftaar se ${fmt(Math.max(0, Math.round(pace)))} par khatam hoga`, sub: `${fmt(target)} ke liye ab roz ${fmt(Math.ceil((target - st.net) / Math.max(1, dim - day)))} chahiye` });
+  }
+
+  // --- personal spending ---
+  const waste = (from, to) => data.expenses.filter((e) => e.unnecessary && e.date >= from && e.date <= to).reduce((a, e) => a + e.amount, 0);
+  const dAgo = (n) => { const x = new Date(today + "T00:00:00"); x.setDate(x.getDate() - n); return x.toISOString().slice(0, 10); };
+  const wNow = waste(dAgo(6), today), wPrev = waste(dAgo(13), dAgo(7));
+  if (wNow > 0 && wNow > wPrev * 1.3 && wNow - wPrev >= 500) add({ id: `waste-${dAgo(6)}`, scope: "personal", level: 2, tab: "expense", text: `Is hafte waste ${fmt(wNow)} — pichhle hafte ${fmt(wPrev)} tha`, sub: "fine bhi lag raha hai, dhyan do" });
+  const pSpend = (key, uptoDay) => data.expenses.filter((e) => monthKey(e.date) === key && Number(e.date.slice(8, 10)) <= uptoDay && entryClass(e, "expense") === "personal").reduce((a, e) => a + e.amount, 0);
+  const pNow = pSpend(mk, day), pPrev = pSpend(shiftMonthKey(mk, -1), day);
+  if (pPrev > 0 && pNow > pPrev * 1.3 && pNow - pPrev >= 1000) add({ id: `pspend-${mk}`, scope: "personal", level: 1, tab: "expense", text: `Personal kharcha is mahine ${fmt(pNow)} — pichhle mahine isi din tak ${fmt(pPrev)} tha`, sub: `${Math.round((pNow / pPrev - 1) * 100)}% zyada` });
+
+  // --- housekeeping ---
+  const untagged = data.income.filter((e) => entryClass(e, "income") === "unsorted").length + data.expenses.filter((e) => entryClass(e, "expense") === "unsorted").length;
+  if (untagged > 0) add({ id: "untagged", scope: "all", level: 1, tab: "business", text: `${untagged} entr${untagged === 1 ? "y" : "ies"} par business/personal tag nahi hai`, sub: "Biz tab me ek tap se tag karo — tabhi profit sahi aayega" });
+  // exact same entry twice on one day is usually a double entry
+  const seen = {};
+  [...data.income.map((e) => ({ ...e, _l: e.source, _k: "income" })), ...data.expenses.map((e) => ({ ...e, _l: e.category, _k: "expense" }))].filter((e) => days(e.date, today) <= 7 && !e.saleId && !e.dueId)
+    .forEach((e) => { const k = `${e._k}|${e.date}|${e.amount}|${e._l}`; seen[k] = (seen[k] || 0) + 1; });
+  Object.entries(seen).filter(([, n]) => n > 1).slice(0, 2).forEach(([k]) => { const [kind, date, amt, label] = k.split("|"); add({ id: `dup-${k}`, scope: "all", level: 1, tab: kind === "income" ? "income" : "expense", text: `${fmtDateShort(date)} ko ${fmt(Number(amt))} ${label} do baar likha hai`, sub: "galti se double ho to ek hata do" }); });
+
+  return out.sort((a, b) => b.level - a.level);
+}
+
+function SmartFeed({ data, mode, setTab, setToast }) {
+  const today = todayISO();
+  const hideKey = `smart_hide_${today}`;
+  const [hidden, setHidden] = useState(() => { try { return JSON.parse(localStorage.getItem(hideKey) || "[]"); } catch { return []; } });
+  const [all, setAll] = useState(false);
+  const items = useMemo(() => buildInsights(data, today).filter((x) => mode === "all" || x.scope === "all" || x.scope === mode), [data, today, mode]);
+  const shown = items.filter((x) => !hidden.includes(x.id));
+  const hide = (id) => { const next = [...hidden, id]; setHidden(next); try { localStorage.setItem(hideKey, JSON.stringify(next)); } catch { /* ignore */ } };
+  const color = (l) => (l === 3 ? T.orange : l === 2 ? T.gold : l === 0 ? T.green : T.blue);
+  const needsLogin = !authSession;
+  if (shown.length === 0 && !needsLogin) return null;
+  const list = all ? shown : shown.slice(0, 4);
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={S.sectionHeadRow}>
+        <SectionLabel text={`DHYAN DO · ${shown.length + (needsLogin ? 1 : 0)}`} noMargin />
+        {shown.length > 4 && <button style={S.correctionLink} onClick={() => setAll((v) => !v)}>{all ? "KAM DIKHAO" : `SAB ${shown.length} DEKHO`}</button>}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {needsLogin && (
+          <div style={{ ...S.formCard, marginTop: 0, padding: "11px 13px", gap: 4, borderLeft: `3px solid ${T.orange}` }}>
+            <div style={{ fontSize: 12.5, fontWeight: 700 }}>Login nahi kiya — tumhara data abhi bina lock ke hai</div>
+            <div style={{ fontSize: 10.5, color: T.muted, fontWeight: 600 }}>upar orange shield dabao aur portal wale email/password se login karo</div>
+          </div>
+        )}
+        {list.map((x) => (
+          <div key={x.id} style={{ ...S.formCard, marginTop: 0, padding: "11px 13px", gap: 5, borderLeft: `3px solid ${color(x.level)}` }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+              <div style={{ flex: 1, minWidth: 0 }} onClick={() => x.tab && setTab(x.tab)}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, lineHeight: 1.35 }}>{x.text}</div>
+                {x.sub && <div style={{ fontSize: 10.5, color: T.muted, fontWeight: 600, marginTop: 2, lineHeight: 1.4 }}>{x.sub}</div>}
+              </div>
+              <button style={S.deleteBtn} title="aaj ke liye hatao" onClick={() => hide(x.id)}><X size={12} color={T.muted} /></button>
+            </div>
+            <div style={{ display: "flex", gap: 12 }}>
+              {x.copy && <button style={S.correctionLink} onClick={async () => { const ok = await copyToClipboard(x.copy); setToast(ok ? "REMINDER COPIED — WHATSAPP ME PASTE KARO" : "COPY NAHI HUA"); setTimeout(() => setToast(null), 1800); }}>REMINDER COPY</button>}
+              {x.tab && <button style={S.correctionLink} onClick={() => setTab(x.tab)}>KHOLO →</button>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

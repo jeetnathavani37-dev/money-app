@@ -270,3 +270,14 @@ Every due and every sale is its own entry and is settled on its own, fully or pa
 - Deal tab box: several items added to a box (kept in localStorage `deal_box`); weights are summed
   first and the reshipper's minimum/rounding applied once, reship is shared by weight, and the card
   shows total card spend, landed, sale, profit and the saving versus shipping each item alone.
+
+## Smart feed ("DHYAN DO")
+
+`buildInsights(data, today)` turns the books into a ranked list of things that need attention, using
+fixed rules only (no AI): overdue / due-soon / undated sales per party (with a copyable reminder),
+overdue or long-pending dues, stock sitting 30+ days, orders in transit 21+ days, cashback pending
+45+ days, a month with revenue but no sourcing cost logged, sales below the minimum margin, target
+pace, receivables concentrated on one party, waste and personal-spend spikes, untagged entries and
+same-day duplicates. `SmartFeed` shows it at the top of Home (filtered by the active view, hideable
+for the day) and James receives the same list in its prompt. New rules go in `buildInsights`.
+The New Sale form suggests known party names and shows that buyer's history (type, pay speed, open balance).
