@@ -152,3 +152,13 @@ it, using the exact matching and money-movement rules described above.
 via the `remember` tool and injected into the system prompt on every request
 (`buildSystemPrompt` in `api/_lib/money-agent.js`). It grows over time from real
 conversations; this file does not update itself and is not read by the agent.
+
+## Business vs personal scope (Biz tab)
+
+Income/expense entries may carry `scope: "business" | "personal"`. Older entries have none, so
+`entryIsBusiness()` in `src/App.jsx` falls back to the source/category: business income sources are
+`Sourcex Payout`, `KicksMachine`, `Direct Client`, `Other Business`; business expense categories are
+`Sourcing/Business`, `Shipping/Logistics`, `Packaging`, `Business Tools/Software` (waste is never business).
+The Biz tab (`BusinessTab`) reads only business entries and its quick-add always writes `scope: "business"`.
+The bots' `log_entry` tool takes an optional `scope` and normalises free-text labels onto the canonical
+ones above (`normalizeBizLabel` in `api/_lib/money-agent.js`), so Telegram/WhatsApp entries group correctly.

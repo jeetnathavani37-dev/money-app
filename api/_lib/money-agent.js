@@ -22,7 +22,7 @@ You are not a generic chatbot. You operate at the level of the best operator in 
 - A closer's instinct on collections: receivables are unpaid debt to chase, not "future money" to relax about.
 
 CORE ACTIONS — always via tools, never by guessing:
-1. LOG a new income, expense, or wasteful/impulsive-spending entry when reported — log_entry tool.
+1. LOG a new income, expense, or wasteful/impulsive-spending entry when reported — log_entry tool. Always set scope: "business" for anything about the resale business (supplier/Sourcex/KicksMachine payouts, client payments, stock purchases, shipping/reship, packaging, business tools) and "personal" for the rest; use the canonical business labels from the tool description so the app's Biz tab groups them correctly.
 2. ANSWER any question about the real data — spending, income, receivables/payables, net worth, trends, margins, "how much did I spend on X between Y and Z" — always call get_financial_data first and answer only from what it returns. Never estimate, round generously, or invent a number.
 3. UNDO the most recently logged entry when asked — undo_last_entry tool.
 4. ADVISE — every recommendation must cite a real number from get_financial_data (a specific category, sale, trend, or receivable) and name the actual business mechanism behind it. Generic advice ("cut unnecessary spending," "sell more," "track your expenses better") is a failure — you already have the real data, use it.
@@ -69,7 +69,8 @@ const TOOLS = [
       properties: {
         kind: { type: "string", enum: ["income", "expense", "waste"], description: "income = money earned; expense = a normal necessary cost; waste = impulsive/unnecessary spending (drinks, gambling, impulse buys) — carries an automatic fine" },
         amount: { type: "number", description: "the amount, before any waste fine" },
-        label: { type: "string", description: "category (for expense/waste) or source (for income), e.g. 'Food', 'Shipping', 'Sold Order'" },
+        label: { type: "string", description: "category (for expense/waste) or source (for income). Business income sources: 'Sourcex Payout', 'KicksMachine', 'Direct Client', 'Other Business'. Business expense categories: 'Sourcing/Business', 'Shipping/Logistics', 'Packaging', 'Business Tools/Software'. Personal examples: 'Food', 'Gym', 'Travel', 'Shopping'." },
+        scope: { type: "string", enum: ["business", "personal"], description: "business = a Luxella/resale-business income or cost (supplier payouts, stock purchases, shipping/reship, packaging, business tools, client payments); personal = everything else. Set it whenever it is clear from the message; omit only if genuinely ambiguous." },
         note: { type: "string", description: "short free-text note, optional" },
         date: { type: "string", description: "YYYY-MM-DD; omit to use today" },
       },
@@ -266,16 +267,38 @@ function applyFundDelta(data, amount, sign) {
 
 // Pure — computes the post-log state so it can be safely recomputed against fresh
 // data if a concurrent write from another channel forces a retry.
+// Maps free-text labels onto the canonical business sources/categories the web app's Biz tab groups by.
+// Only rewrites a label when it clearly matches (or the entry is explicitly business); otherwise keeps it.
+function normalizeBizLabel(kind, label, scope) {
+  const l = label.toLowerCase();
+  if (kind === "income") {
+    if (/sourcex|source x/.test(l)) return "Sourcex Payout";
+    if (/kicks ?machine|\bkm\b/.test(l)) return "KicksMachine";
+    if (scope === "business") {
+      if (/client|customer|direct|sold|sale/.test(l)) return "Direct Client";
+      if (!["Sourcex Payout", "KicksMachine", "Direct Client", "Other Business"].includes(label)) return "Other Business";
+    }
+    return label;
+  }
+  if (kind === "waste") return label;
+  if (/ship|logistic|reship|freight|courier|customs|duty/.test(l)) return "Shipping/Logistics";
+  if (/packag|packing|bubble|box|tape/.test(l)) return "Packaging";
+  if (/software|saas|tools?\b|hosting|domain|shopify/.test(l)) return scope === "personal" ? label : "Business Tools/Software";
+  if (scope === "business" && /sourc|stock|inventory|supplier|purchase|cost|costing|order/.test(l)) return "Sourcing/Business";
+  return label;
+}
+
 function computeLog(data, input, sourceLabel) {
   const amt = Number(input.amount);
   if (!amt || amt <= 0) return null;
   const date = input.date && /^\d{4}-\d{2}-\d{2}$/.test(input.date) ? input.date : todayISO();
-  const label = (input.label || "Other").trim();
+  const scope = input.scope === "business" || input.scope === "personal" ? input.scope : null;
+  const label = normalizeBizLabel(input.kind, (input.label || "Other").trim(), scope);
   const note = (input.note || "").trim();
 
   if (input.kind === "income") {
     const { fundDelta, fundBalances } = applyFundDelta(data, amt, 1);
-    const entry = { id: Date.now(), amount: amt, source: label, note: note || sourceLabel, date, fundDelta };
+    const entry = { id: Date.now(), amount: amt, source: label, note: note || sourceLabel, date, fundDelta, ...(scope ? { scope } : {}) };
     return {
       data: { ...data, income: [...data.income, entry], fundBalances },
       meta: `Logged ₹${amt} income — ${label}`,
@@ -285,7 +308,7 @@ function computeLog(data, input, sourceLabel) {
   const fine = isWaste ? tieredFine(amt) : 0;
   const total = amt + fine;
   const { fundDelta, fundBalances } = applyFundDelta(data, total, -1);
-  const entry = { id: Date.now(), amount: total, category: label, note: note || sourceLabel, date, unnecessary: isWaste, fine, fundDelta };
+  const entry = { id: Date.now(), amount: total, category: label, note: note || sourceLabel, date, unnecessary: isWaste, fine, fundDelta, ...(scope && !isWaste ? { scope } : {}) };
   return {
     data: { ...data, expenses: [...data.expenses, entry], fundBalances },
     meta: `Logged ₹${total} ${isWaste ? `waste (+₹${fine} fine)` : "expense"} — ${label}`,
