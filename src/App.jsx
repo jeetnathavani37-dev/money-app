@@ -7016,7 +7016,87 @@ function simulateGrowth({ capital, marginPct, cycleDays, reinvestPct, target }) 
 }
 const spanText = (days) => (days === null ? "60 saal me bhi nahi" : days < 45 ? `${Math.max(1, Math.round(days))} din` : days < 730 ? `${(days / 30).toFixed(1)} mahine` : `${(days / 365).toFixed(1)} saal`);
 
+// ---- Money moves: concrete things that raise income or cut spending, each with the rupees it is worth.
+// Everything here is arithmetic on his own entries — nothing is estimated from outside. A move only appears
+// when the numbers behind it exist; `impact` is ₹ (one-time for collections, per month for the rest).
+function buildMoneyMoves(data, today) {
+  const cfg = bizSettings(data), st = engineStats(data, today), so = salesOutstanding(data, today);
+  const mk = monthKey(today), moves = [];
+  const add = (m) => moves.push({ ...m, id: `${m.id}-${mk}`, impact: Math.round(m.impact || 0) });
+  const sales = data.sales || [];
+  // --- income ---
+  const lateBy = {};
+  so.overdue.forEach((x) => { const p = (lateBy[x.party] = lateBy[x.party] || { v: 0, n: 0, worst: 0 }); p.v += saleBalance(x); p.n += 1; p.worst = Math.max(p.worst, dayDiff(x.dueDate, today)); });
+  Object.entries(lateBy).sort((a, b) => b[1].v - a[1].v).slice(0, 4).forEach(([party, p]) => add({ id: `collect-${party}`, side: "in", once: true, impact: p.v, tab: "sales",
+    text: `${party} se ${fmt(p.v)} late nikalwao`, sub: `${p.n} entr${p.n === 1 ? "y" : "ies"}, sabse purani ${p.worst} din late${st.margin !== null ? ` · ye paisa dobara lagao to apne ${st.margin.toFixed(0)}% margin par ek chakkar me ~${fmt((p.v * st.margin) / 100)}` : ""}` }));
+  if (so.pipeline.length) {
+    const delivered = so.pipeline.filter((x) => /delivered/i.test(x.note || ""));
+    if (delivered.length) add({ id: "mrn", side: "in", once: true, impact: delivered.reduce((a, x) => a + saleBalance(x), 0), tab: "sales", text: `${delivered.length} order KM ko pahunch gaye par MRN nahi hua`, sub: "MRN karwao — tabhi payout ki ginti shuru hogi" });
+  }
+  const recent = sales.filter((x) => x.cost > 0 && x.date >= dAgoISO(today, 89));
+  const low = recent.filter((x) => ((x.saleValue - x.cost) / x.cost) * 100 < cfg.minMargin);
+  if (low.length) {
+    const short = low.reduce((a, x) => a + ((x.cost * cfg.minMargin) / 100 - (x.saleValue - x.cost)), 0);
+    const months = Math.max(1, Math.min(3, dayDiff(recent.reduce((a, x) => (x.date < a ? x.date : a), today), today) / 30));
+    const who = {}; low.forEach((x) => { who[x.party] = (who[x.party] || 0) + 1; });
+    add({ id: "lowmargin", side: "in", impact: short / months, tab: "sales", text: `${cfg.minMargin}% se kam margin wale order lena band karo`, sub: `90 din me ${low.length} aise order (${Object.entries(who).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => `${k} ${v}`).join(", ")}) — ${cfg.minMargin}% par hote to ${fmt(short)} zyada bachta` });
+  }
+  const pm = {};
+  recent.forEach((x) => { const p = (pm[x.party] = pm[x.party] || { c: 0, pr: 0, n: 0 }); p.c += x.cost; p.pr += x.saleValue - x.cost; p.n += 1; });
+  const ranked = Object.entries(pm).filter(([, v]) => v.n >= 3).map(([k, v]) => ({ k, m: (v.pr / v.c) * 100, c: v.c, n: v.n })).sort((a, b) => b.m - a.m);
+  if (ranked.length >= 2 && ranked[0].m - ranked[ranked.length - 1].m >= 3) {
+    const best = ranked[0], worst = ranked[ranked.length - 1];
+    add({ id: "shift", side: "in", impact: ((worst.c * (best.m - worst.m)) / 100) / 3, tab: "sales", text: `${worst.k} ka paisa ${best.k} jaise margin par lagao`, sub: `${best.k} ${best.m.toFixed(1)}% (${best.n} order) vs ${worst.k} ${worst.m.toFixed(1)}% (${worst.n} order) — 90 din ke ${fmt(worst.c)} par farq ${fmt((worst.c * (best.m - worst.m)) / 100)}` });
+  }
+  const slow = (() => {
+    const by = {};
+    sales.filter((x) => saleBalance(x) <= 0 && (x.payments || []).length).forEach((x) => { const p = (by[x.party] = by[x.party] || { d: 0, n: 0 }); p.d += Math.max(0, dayDiff(x.date, x.payments[x.payments.length - 1].date)); p.n += 1; });
+    return Object.entries(by).filter(([, v]) => v.n >= 3).map(([k, v]) => ({ k, d: v.d / v.n })).sort((a, b) => b.d - a.d);
+  })();
+  if (slow.length >= 2 && st.margin !== null && st.capital > 0 && slow[0].d - slow[slow.length - 1].d >= 7) {
+    const cur = simulateGrowth({ capital: st.capital, marginPct: st.margin, cycleDays: Math.max(1, slow[0].d), reinvestPct: 0, target: 1 });
+    const fast = simulateGrowth({ capital: st.capital, marginPct: st.margin, cycleDays: Math.max(1, slow[0].d - 7), reinvestPct: 0, target: 1 });
+    if (cur && fast) add({ id: "speed", side: "in", impact: fast.perMonth - cur.perMonth, tab: "sales", text: `${slow[0].k} se paisa 7 din jaldi lo`, sub: `${slow[0].k} avg ${slow[0].d.toFixed(0)} din me deta hai, ${slow[slow.length - 1].k} ${slow[slow.length - 1].d.toFixed(0)} din me` });
+  }
+  const noCost = sales.filter((x) => !(x.cost > 0) && !x.costLogged).length;
+  if (noCost) add({ id: "nocost", side: "in", impact: 0, tab: "sales", text: `${noCost} sale me cost daalo`, sub: "bina cost ke asli profit aur margin pata nahi chalta" });
+  // --- spending ---
+  const exp = data.expenses.filter((e) => !e.auto);
+  const personal = (k) => exp.filter((e) => monthKey(e.date) === k && entryClass(e, "expense") === "personal");
+  const cur = personal(mk);
+  const dayOfMonth = Number(today.slice(8, 10)), daysInMonth = new Date(Number(today.slice(0, 4)), Number(today.slice(5, 7)), 0).getDate();
+  const waste = exp.filter((e) => monthKey(e.date) === mk && e.unnecessary).reduce((a, e) => a + e.amount, 0);
+  const gp = goalPlans(data, today)[0];
+  if (waste > 0) add({ id: "waste", side: "out", impact: waste, tab: "expense", text: `Is mahine ${fmt(waste)} waste me gaya`, sub: `ye tumne khud waste mark kiya hai — agle mahine ye na ho to seedha bachat${gp ? ` · ${gp.g.name} ke liye ${fmt(gp.left)} chahiye` : ""}` });
+  const prevKeys = [1, 2, 3].map((n) => shiftMonthKey(mk, -n)).filter((k) => personal(k).length > 0);
+  if (prevKeys.length) {
+    const cats = {};
+    cur.forEach((e) => { cats[e.category] = (cats[e.category] || 0) + e.amount; });
+    Object.entries(cats).map(([c, v]) => { const avg = prevKeys.reduce((a, k) => a + personal(k).filter((e) => e.category === c).reduce((x, e) => x + e.amount, 0), 0) / prevKeys.length; const n = cur.filter((e) => e.category === c).length; return { c, v, avg, pace: n >= 4 ? (v / dayOfMonth) * daysInMonth : v }; })
+      .filter((x) => x.avg > 0 && x.pace > x.avg * 1.2 && x.pace - x.avg >= 500).sort((a, b) => (b.pace - b.avg) - (a.pace - a.avg)).slice(0, 3)
+      .forEach((x) => add({ id: `over-${x.c}`, side: "out", impact: x.pace - x.avg, tab: "expense", text: `${x.c} pichhle mahino se zyada chal raha hai`, sub: `ab tak ${fmt(x.v)}${x.pace > x.v ? `, isi raftaar se ${fmt(x.pace)}` : ""} · pehle avg ${fmt(x.avg)}/mahina` }));
+  }
+  const last30 = exp.filter((e) => e.date >= dAgoISO(today, 29) && entryClass(e, "expense") === "personal");
+  const freq = {};
+  last30.forEach((e) => { const p = (freq[e.category] = freq[e.category] || { n: 0, v: 0 }); p.n += 1; p.v += e.amount; });
+  Object.entries(freq).filter(([c, v]) => v.n >= 6 && !moves.some((m) => m.id === `over-${c}-${mk}`)).sort((a, b) => b[1].v - a[1].v).slice(0, 2).forEach(([c, v]) => add({ id: `habit-${c}`, side: "out", impact: (v.v / v.n) * 4, tab: "expense", text: `${c}: 30 din me ${v.n} baar`, sub: `kul ${fmt(v.v)}, ek baar ka avg ${fmt(v.v / v.n)} — hafte me 1 kam karo to mahine ka ${fmt((v.v / v.n) * 4)} bachega` }));
+  // the same note showing up in 2+ different months at a similar amount = a subscription / fixed bill
+  const rec = {};
+  exp.filter((e) => e.note && e.date >= dAgoISO(today, 120)).forEach((e) => { const k = e.note.trim().toLowerCase().replace(/\d+/g, "").slice(0, 24); if (k.length < 3) return; const p = (rec[k] = rec[k] || { months: new Set(), amts: [], label: e.note.trim() }); p.months.add(monthKey(e.date)); p.amts.push(e.amount); });
+  const subs = Object.values(rec).filter((p) => p.months.size >= 2 && Math.max(...p.amts) <= Math.min(...p.amts) * 1.25).map((p) => ({ label: p.label, v: p.amts.reduce((a, x) => a + x, 0) / p.amts.length })).sort((a, b) => b.v - a.v);
+  if (subs.length) add({ id: "subs", side: "out", impact: 0, tab: "expense", text: `${subs.length} kharcha har mahine dohra raha hai (${fmt(subs.reduce((a, x) => a + x.v, 0))}/mahina)`, sub: `${subs.slice(0, 4).map((x) => `${x.label} ${fmt(x.v)}`).join(" · ")} — jo kaam ka nahi wo band karo` });
+  const s1 = buildStatement(data, mk);
+  if (s1.revenue > 0 && s1.shipping > 0) {
+    const s0 = buildStatement(data, shiftMonthKey(mk, -1));
+    const r1 = (s1.shipping / s1.revenue) * 100, r0 = s0.revenue > 0 ? (s0.shipping / s0.revenue) * 100 : null;
+    if (r0 !== null && r1 > r0 + 1) add({ id: "ship", side: "out", impact: ((r1 - r0) / 100) * s1.revenue, tab: "business", text: "Shipping ka hissa badh gaya", sub: `is mahine revenue ka ${r1.toFixed(1)}%, pichhle mahine ${r0.toFixed(1)}% — farq ${fmt(((r1 - r0) / 100) * s1.revenue)}` });
+  }
+  return moves.sort((a, b) => b.impact - a.impact);
+}
+
 const AGENTS = [
+  { id: "income", name: "INCOME", line: "paisa kaise badhe — kis buyer, kis margin, kis collection se", ask: "Find where more income can come from using ONLY these numbers: late and stuck money, buyers and orders below his minimum margin, buyers with better margin or faster payment, sales with no cost. Give the 3-4 actions that add the most rupees, biggest first, each with the rupee figure and the exact buyer/order it is about." },
+  { id: "costs", name: "COST CUTTER", line: "business aur personal — kahan kharcha ghat sakta hai", ask: "Find where spending can come down using ONLY these numbers: waste, categories running above their own past average, habits that repeat many times a month, repeating bills, shipping/other cost as a share of revenue. Give the 3-4 cuts that save the most rupees per month, biggest first, each with the figure. Do not suggest cutting something the data does not show." },
   { id: "cfo", name: "CFO", line: "is mahine ka poora hisaab: kahan kama rahe ho, kahan paisa beh raha hai", ask: "Give a CFO review of this month: where the profit really comes from, where money is leaking or stuck, and the 3 most valuable actions for this week." },
   { id: "growth", name: "GROWTH", line: "capital, margin aur speed — aage badhne ke 3 sabse bade moves", ask: "Act as a growth strategist for this reselling business. Using capital deployed, margin, how fast money comes back, and concentration on buyers, name the 3 highest-leverage moves to grow profit, each with the number it would move." },
   { id: "pricing", name: "PRICING", line: "kaun sa buyer / type achha margin deta hai, kahan sasta bech rahe ho", ask: "Review pricing and margins by buyer and by sale type. Which buyers and types are worth more of his capital, which are below his minimum margin, and what should he change." },
@@ -7049,6 +7129,10 @@ function GrowTab({ data, persist, setToast }) {
     { k: "Capital dugna karo", v: simulateGrowth({ ...inputs, capital: inputs.capital * 2 }) },
   ].map((l) => ({ ...l, saved: sim.hitDays !== null && l.v && l.v.hitDays !== null ? sim.hitDays - l.v.hitDays : null, extra: l.v ? l.v.perMonth - sim.perMonth : 0 })).sort((a, b) => (b.saved ?? -1) - (a.saved ?? -1)) : [];
 
+  const moves = useMemo(() => buildMoneyMoves(data, today), [data, today]);
+  const done = data.movesDone || {};
+  const toggleMove = (id) => { const next = { ...done }; if (next[id]) delete next[id]; else next[id] = today; persist({ ...data, movesDone: next }); };
+  const moveList = (side) => moves.filter((m) => m.side === side);
   const savePlan = () => { persist({ ...data, growPlan: { ...inputs } }); setToast("PLAN SAVED"); setTimeout(() => setToast(null), 1200); };
 
   const runAgent = async (ag) => {
@@ -7074,6 +7158,9 @@ SALES MISSING A COST: ${(data.sales || []).filter((x) => !(x.cost > 0) && !x.cos
 PERSONAL THIS MONTH: ₹${pk(mk).reduce((a, e) => a + e.amount, 0)} [${Object.entries(cat).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k} ₹${v}`).join(", ") || "none"}]; last month ₹${pk(shiftMonthKey(mk, -1)).reduce((a, e) => a + e.amount, 0)}; waste this month ₹${data.expenses.filter((e) => monthKey(e.date) === mk && e.unnecessary).reduce((a, e) => a + e.amount, 0)}
 GOALS: ${goalPlans(data, today).map((p2) => `${p2.g.name} needs ₹${p2.left} more in a fund that gets ${p2.pct}% of what he nets (= ₹${p2.profitNeeded ?? "?"} more net profit)`).join("; ") || "none"}
 NORTH STAR: ${data.northStar || "not set"}
+MONEY MOVES THE APP ALREADY CALCULATED (rupee effect is exact arithmetic on his entries): ${moves.map((m) => `[${m.side === "in" ? "income" : "spend"}] ${m.text} — ${m.sub}${m.impact ? ` (₹${m.impact}${m.once ? " one-time" : "/month"})` : ""}${done[m.id] ? " [HE MARKED THIS DONE]" : ""}`).join(" || ") || "none — not enough entries yet"}
+ORDERS BELOW MIN MARGIN (90 days): ${(data.sales || []).filter((x) => x.cost > 0 && x.date >= dAgoISO(today, 89) && ((x.saleValue - x.cost) / x.cost) * 100 < cfg.minMargin).slice(0, 10).map((x) => `${x.party} ${x.item || ""} sale ₹${x.saleValue} cost ₹${x.cost} (${(((x.saleValue - x.cost) / x.cost) * 100).toFixed(1)}%)`).join("; ") || "none"}
+NOT YET RECEIVABLE (KicksMachine, MRN pending): ₹${so.pipelineTotal} across ${so.pipeline.length} orders
 ALERTS: ${buildInsights(data, today).slice(0, 10).map((x) => x.text).join(" | ") || "none"}
 WHAT HE HAS TAUGHT THE APP: ${(data.businessMemory || "").trim() || "nothing yet"}`;
       const prompt = `You are the ${ag.name} agent for Jeet, a solo founder who sources luxury goods abroad and resells in India (B2B to KicksMachine/Sourcex, plus clients and resellers). ${ag.ask}
@@ -7082,6 +7169,8 @@ RULES — these matter more than sounding smart:
 - Use ONLY the numbers below. Every point must cite a figure from them. If the data needed for a point is missing, say exactly what is missing and what he should record — do not fill the gap with generic advice or invented numbers.
 - No motivational talk, no generic business tips. Specific to these numbers or leave it out.
 - If there is too little data to judge, say so plainly in the first line and list the 2-3 things to record first.
+- Start with one line: the total rupees these actions are worth (per month, or one-time) — only if the figures support it.
+- Every bullet = one action he can do this week + the exact rupee effect + who/what it is about. Do not repeat a move he already marked done; build on it or pick the next one.
 - Max 6 short bullets. Plain Hinglish like he writes. Amounts as ₹ with Indian commas. No markdown headings, no bold.
 
 DATA:
@@ -7107,6 +7196,31 @@ ${pack}`;
 
   return (
     <div>
+      {[["in", "INCOME BADHAO", T.green], ["out", "KHARCHA GHATAO", T.orange]].map(([side, title, color]) => {
+        const list = moveList(side);
+        const left = list.filter((m) => !done[m.id]);
+        const monthly = left.filter((m) => !m.once).reduce((a, m) => a + m.impact, 0), once = left.filter((m) => m.once).reduce((a, m) => a + m.impact, 0);
+        return (
+          <div key={side}>
+            <SectionLabel text={title} />
+            <div style={{ ...S.formCard, gap: 10 }}>
+              {list.length === 0 && <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.5 }}>{side === "in" ? "Abhi koi move nahi nikla — sales aur unka cost aate hi yahan asli numbers ke saath dikhega." : "Abhi koi move nahi nikla — kharche likhte raho (ya bank SMS chalu karo), 1-2 hafte me pattern dikhne lagega."}</div>}
+              {list.length > 0 && <div style={{ fontSize: 12, fontWeight: 700, color }} className="tnum">{once > 0 ? `${fmt(once)} ek baar` : ""}{once > 0 && monthly > 0 ? " + " : ""}{monthly > 0 ? `${fmt(monthly)} / mahina` : ""}{once + monthly > 0 ? " ka asar baaki hai" : left.length ? "ye kaam baaki hain" : "sab kaam ho gaye ✓"}</div>}
+              {list.map((m) => (
+                <div key={m.id} style={{ display: "flex", gap: 10, alignItems: "flex-start", opacity: done[m.id] ? 0.45 : 1 }}>
+                  <button aria-label="ho gaya" onClick={() => toggleMove(m.id)} style={{ width: 22, height: 22, flexShrink: 0, borderRadius: 6, border: `1.5px solid ${done[m.id] ? color : T.lineStrong}`, background: done[m.id] ? color : "transparent", color: T.bg, fontSize: 13, fontWeight: 800, lineHeight: 1, marginTop: 1 }}>{done[m.id] ? "✓" : ""}</button>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5, fontWeight: 700, textDecoration: done[m.id] ? "line-through" : "none" }}>
+                      <span>{m.text}</span>{m.impact > 0 && <span className="tnum" style={{ color, flexShrink: 0 }}>{side === "in" ? "+" : "−"}{fmt(m.impact)}{m.once ? "" : "/m"}</span>}
+                    </div>
+                    <div style={{ fontSize: 10.5, color: T.muted, marginTop: 2, lineHeight: 1.5 }}>{m.sub}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
       <SectionLabel text="TUMHARA ENGINE (ASLI NUMBERS)" />
       <div style={S.formCard}>
         {line("Business me laga paisa", fmt(Math.round(st.capital)), { big: true, color: T.blue })}
