@@ -72,6 +72,50 @@ async function signInOwner(email, password) {
   saveAuth(await authRequest("password", { email: email.trim().toLowerCase(), password }));
   return authSession;
 }
+// ---- passwordless sign-in: a one-time link / code mailed to the owner (no password needed) ----
+const sessFromAuth = (j, email) => {
+  let mail = (j.user && j.user.email) || email || "";
+  if (!mail && j.access_token) { try { mail = JSON.parse(atob(j.access_token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).email || ""; } catch { /* ignore */ } }
+  return { access_token: j.access_token, refresh_token: j.refresh_token, expires_at: Date.now() + (Number(j.expires_in) || 3600) * 1000, email: mail };
+};
+async function sendLoginLink(email) {
+  const back = window.location.origin + "/";
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/otp?redirect_to=${encodeURIComponent(back)}`, { method: "POST", headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" }, body: JSON.stringify({ email: email.trim().toLowerCase(), create_user: false }) });
+  if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error_description || j.msg || j.message || `mail nahi gaya (${res.status})`); }
+}
+// accepts either the 6-digit code from the mail, or the whole link copied from the mail
+async function verifyLoginInput(email, input) {
+  const raw = String(input || "").trim();
+  let body;
+  if (/^https?:\/\//i.test(raw)) {
+    const u = new URL(raw);
+    const hash = new URLSearchParams(u.hash.replace(/^#/, ""));
+    if (hash.get("access_token")) { saveAuth(sessFromAuth({ access_token: hash.get("access_token"), refresh_token: hash.get("refresh_token"), expires_in: hash.get("expires_in") }, email)); return authSession; }
+    const tok = u.searchParams.get("token") || u.searchParams.get("token_hash");
+    if (!tok) throw new Error("Is link me login token nahi mila. Mail wala poora link copy karo.");
+    body = { type: u.searchParams.get("type") || "magiclink", token_hash: tok };
+  } else {
+    const code = raw.replace(/\s+/g, "");
+    if (!/^\d{6,10}$/.test(code)) throw new Error("Mail wala code ya poora link daalo.");
+    body = { type: "email", email: email.trim().toLowerCase(), token: code };
+  }
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/verify`, { method: "POST", headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || !j.access_token) throw new Error(/expired|invalid/i.test(j.error_description || j.msg || "") ? "Link/code purana ho gaya ya use ho chuka. Naya bhejo." : (j.error_description || j.msg || `login nahi hua (${res.status})`));
+  saveAuth(sessFromAuth(j, email));
+  return authSession;
+}
+// arriving back from the mailed link: the session comes in the URL hash
+let cameFromLink = false, linkError = null;
+(() => {
+  try {
+    const h = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    if (h.get("access_token") && h.get("refresh_token")) { saveAuth(sessFromAuth({ access_token: h.get("access_token"), refresh_token: h.get("refresh_token"), expires_in: h.get("expires_in") })); cameFromLink = true; }
+    else if (h.get("error_description")) linkError = h.get("error_description").replace(/\+/g, " ");
+    if (cameFromLink || linkError) window.history.replaceState(null, "", window.location.pathname);
+  } catch { /* ignore */ }
+})();
+
 // tells the server this device really works signed-in (so the public access can be switched off safely)
 async function touchAuth() {
   if (!authSession) return;
@@ -5201,13 +5245,20 @@ function SignInBox() {
   const [email, setEmail] = useState((authSession && authSession.email) || "");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState(null);
-  const go = async () => {
-    if (!email.trim() || !password || busy) return;
+  const [err, setErr] = useState(linkError ? "Link purana ho gaya ya use ho chuka. Naya bhejo." : null);
+  const [sent, setSent] = useState(false);
+  const [code, setCode] = useState("");
+  const [usePw, setUsePw] = useState(false);
+  const run = async (fn) => {
+    if (busy) return;
     setBusy(true); setErr(null);
-    try { await signInOwner(email, password); await touchAuth(); window.location.reload(); }
-    catch (e) { setErr(/invalid/i.test(String(e.message)) ? "Email ya password galat hai." : String(e.message)); setBusy(false); }
+    try { await fn(); } catch (e) { setErr(/invalid login/i.test(String(e.message)) ? "Email ya password galat hai." : /rate|seconds|too many/i.test(String(e.message)) ? "Abhi abhi mail gaya hai. 1 minute ruk kar dobara bhejo." : /not found|signups not allowed/i.test(String(e.message)) ? "Ye email owner account nahi hai." : String(e.message).replace(/^Error:\s*/, "")); }
+    setBusy(false);
   };
+  const done = async () => { await touchAuth(); window.location.reload(); };
+  const send = () => email.trim() && run(async () => { await sendLoginLink(email); setSent(true); });
+  const verify = () => code.trim() && run(async () => { await verifyLoginInput(email, code); await done(); });
+  const pw = () => email.trim() && password && run(async () => { await signInOwner(email, password); await done(); });
   if (authSession) {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -5219,11 +5270,24 @@ function SignInBox() {
   }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.5 }}>Wahi email aur password jo Luxella portal (admin) me chalta hai. Ek baar login karo, phir yaad rahega.</div>
+      <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.5 }}>Password ki zaroorat nahi. Apna owner email daalo, mail me login link aayega.</div>
       <input type="email" autoComplete="username" placeholder="email" value={email} onChange={(e) => setEmail(e.target.value)} style={{ ...S.input, width: "100%" }} />
-      <input type="password" autoComplete="current-password" placeholder="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} style={{ ...S.input, width: "100%" }} />
+      {!usePw && <button style={{ ...S.submitBtnGreen, opacity: busy ? 0.6 : 1 }} className="npop" onClick={send} disabled={busy}>{busy && !sent ? "BHEJ RAHA HAI…" : sent ? "DOBARA BHEJO" : "EMAIL PAR LOGIN LINK BHEJO"}</button>}
+      {sent && !usePw && (
+        <>
+          <div style={{ fontSize: 11, lineHeight: 1.6, fontWeight: 600 }}><span style={{ color: T.green }}>✓ Mail bhej diya.</span> Mail kholo → link par <b>daba kar rakho → Copy Link</b> → yahan paste karo. (Mail me code ho to wo bhi chalega.)</div>
+          <input placeholder="link ya code yahan paste karo" value={code} onChange={(e) => setCode(e.target.value)} onKeyDown={(e) => e.key === "Enter" && verify()} autoCapitalize="off" autoCorrect="off" style={{ ...S.input, width: "100%" }} />
+          <button style={{ ...S.submitBtnGreen, opacity: busy || !code.trim() ? 0.6 : 1 }} className="npop" onClick={verify} disabled={busy || !code.trim()}>{busy ? "LOGIN HO RAHA HAI…" : "LOGIN"}</button>
+        </>
+      )}
+      {usePw && (
+        <>
+          <input type="password" autoComplete="current-password" placeholder="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && pw()} style={{ ...S.input, width: "100%" }} />
+          <button style={{ ...S.submitBtnGreen, opacity: busy ? 0.6 : 1 }} className="npop" onClick={pw} disabled={busy}>{busy ? "SIGNING IN…" : "SIGN IN"}</button>
+        </>
+      )}
       {err && <div style={{ fontSize: 11, color: T.orange, fontWeight: 700 }}>{err}</div>}
-      <button style={{ ...S.submitBtnGreen, opacity: busy ? 0.6 : 1 }} className="npop" onClick={go} disabled={busy}>{busy ? "SIGNING IN…" : "SIGN IN"}</button>
+      <button style={{ ...S.correctionLink, alignSelf: "flex-start" }} onClick={() => { setUsePw(!usePw); setErr(null); }}>{usePw ? "PASSWORD KE BINA (EMAIL LINK)" : "PASSWORD SE LOGIN"}</button>
     </div>
   );
 }
