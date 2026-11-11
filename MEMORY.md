@@ -319,3 +319,16 @@ type, recent entries) instead of the personal `OverviewTab` and `MyDay`. Generic
 double capital). It is arithmetic on his inputs, labelled as not a promise. Four AI agents (`AGENTS`:
 CFO, Growth, Pricing, Spend coach) each make one grounded call over a data pack built from the books;
 answers are cached per day in localStorage because of the AI quota.
+
+## Money inbox (bank SMS / mail)
+
+`SmsImportBanner` (rendered once at app level on Home, in every view) reads pending rows of
+`khata_sms_inbox` and never books anything by itself. `inboxSuggest` proposes where each item belongs:
+a credit that names a party with open sales/dues → split across that party's entries (`AllocEditor`
+with the amount pre-filled); a debit to a party he owes → settle that payable; a debit to a merchant
+he has categorised before → one-tap repeat. What he teaches is kept in `data.partyAliases`
+(sender text → party) and `data.merchantMap` (merchant → category, scope). Rows come from
+`api/sms-webhook.js` (optionally protected by `SMS_WEBHOOK_SECRET`) — the sender field starts with
+`mail` for mail-derived items. KicksMachine/Sourcex payouts should reach the books through the
+Luxella portal (order level), not through this inbox, or they would be counted twice.
+`todayISO()` now returns the local date (it used the UTC date, which is yesterday before 5:30 AM IST).

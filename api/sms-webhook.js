@@ -33,6 +33,12 @@ export default async function handler(req, res) {
 
   try {
     const body = req.body || {};
+    // If SMS_WEBHOOK_SECRET is set in the project's environment, only requests carrying it are accepted
+    // (as ?key=… in the URL or "secret" in the body) — so nobody else can push fake transactions.
+    const required = process.env.SMS_WEBHOOK_SECRET;
+    if (required && (req.query?.key || body.secret) !== required) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
     // accept several common field-name variants used by different SMS-forwarding apps
     const rawMessage = body.content || body.message || body.text || body.body || "";
     const sender = body.sender || body.from || body.contact || null;

@@ -131,7 +131,7 @@ async function updateSmsStatus(id, status) {
   if (!res.ok) throw new Error(`sms update failed: ${res.status}`);
 }
 
-const todayISO = () => new Date().toISOString().slice(0, 10);
+const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 const monthKey = (iso) => iso.slice(0, 7);
 const currentMonthKey = () => monthKey(todayISO());
 const fmt = (n) => "₹" + Math.round(Math.abs(n || 0)).toLocaleString("en-IN");
@@ -2387,6 +2387,7 @@ export default function Khata() {
       <TopBar saving={saving} xp={data.xp} streak={data.streak.count} nextCountryGoal={nextTravelGoal(data)} onOpenLockSetup={() => setLockSetupOpen(true)} onOpenAccount={() => setAccountOpen(true)} mode={scopeMode} />
       <div style={S.body}>
         <ScopeBar mode={scopeMode} setMode={setScopeMode} untagged={untaggedCount} />
+        {tab === "overview" && <SmsImportBanner data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "overview" && scopeMode !== "business" && <MyDay data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} mode={scopeMode} setTab={(t) => { if (!NAV_BY_MODE[scopeMode] || NAV_BY_MODE[scopeMode].includes(t)) setTab(t); else { setScopeMode("all"); setTab(t); } }} />}
         {tab === "overview" && <SmartFeed data={data} mode={scopeMode} setTab={(t) => { if (!NAV_BY_MODE[scopeMode] || NAV_BY_MODE[scopeMode].includes(t)) setTab(t); else { setScopeMode("all"); setTab(t); } }} setToast={setToast} />}
         {tab === "overview" && scopeMode === "business" && <LuxellaHome data={data} setTab={setTab} openJames={() => setJamesSignal((n) => n + 1)} />}
@@ -2597,7 +2598,6 @@ function OverviewTab({ data, persist, registerActivity, setToast, triggerNoteAni
 
   return (
     <div>
-      <SmsImportBanner data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />
 
       <RuthlessPushBanner data={data} />
 
@@ -3660,117 +3660,172 @@ function WhyBanner({ data, persist }) {
   );
 }
 
+// Money inbox: bank SMS and payout mails land here as "detected" money movements. Nothing is booked
+// until he confirms — the inbox only suggests where each one belongs (which party's open entries,
+// or which category) and remembers what he teaches it (party aliases, merchant → category).
+function inboxSuggest(row, data) {
+  const text = `${row.raw_message || ""} ${row.parsed_merchant || ""}`.toLowerCase();
+  const isCredit = row.parsed_type === "credit";
+  const aliases = data.partyAliases || {};
+  const names = (list) => [...new Set(list.map((x) => (x.party || "").trim()).filter(Boolean))];
+  const openSaleParties = names((data.sales || []).filter((x) => saleBalance(x) > 0));
+  const recvParties = names((data.receivables || []).filter((r) => r.status === "pending"));
+  const payParties = names((data.payables || []).filter((r) => r.status === "pending"));
+  const hit = (list) => list.find((p) => p.length >= 3 && text.includes(p.toLowerCase())) || list.find((p) => Object.entries(aliases).some(([a, to]) => to === p && text.includes(a)));
+  if (isCredit) {
+    const sp = hit(openSaleParties); if (sp) return { kind: "sale", party: sp };
+    const rp = hit(recvParties); if (rp) return { kind: "receivable", party: rp };
+  } else if (row.parsed_type === "debit") {
+    const pp = hit(payParties); if (pp) return { kind: "payable", party: pp };
+    const m = (data.merchantMap || {})[(row.parsed_merchant || "").trim().toLowerCase()];
+    if (m) return { kind: "expense", category: m.category, scope: m.scope };
+  }
+  return { kind: null };
+}
+
 function SmsImportBanner({ data, persist, registerActivity, setToast, triggerNoteAnim }) {
   const [pending, setPending] = useState([]);
-  const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [drafts, setDrafts] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [pick, setPick] = useState({}); // rowId -> { mode, party, label, scope, amount }
+  const [alloc, setAlloc] = useState(null); // { row, kind, party }
+  const today = todayISO();
 
-  const refresh = async () => {
-    try {
-      const rows = await fetchPendingSms();
-      setPending(rows);
-      const nextDrafts = {};
-      rows.forEach((r) => {
-        nextDrafts[r.id] = {
-          amount: r.parsed_amount != null ? String(r.parsed_amount) : "",
-          type: r.parsed_type === "credit" ? "income" : "expense",
-          category: r.parsed_merchant || "Other",
-        };
-      });
-      setDrafts(nextDrafts);
-    } catch {
-      // silent — SMS webhook may not be set up yet, don't nag
-    }
+  const refresh = useCallback(async () => {
+    try { setPending(await fetchPendingSms()); } catch { /* table not readable (not signed in) or offline — show nothing */ }
+  }, []);
+  useEffect(() => { refresh(); const t = setInterval(refresh, 60000); return () => clearInterval(t); }, [refresh]);
+
+  const done = async (row, status) => { try { await updateSmsStatus(row.id, status); } catch { /* ignore */ } refresh(); };
+  const toast = (t) => { setToast(t); setTimeout(() => setToast(null), 1500); };
+
+  const openParties = (kind) => [...new Set((kind === "sale" ? (data.sales || []).filter((x) => saleBalance(x) > 0) : (data[kind === "receivable" ? "receivables" : "payables"] || []).filter((r) => r.status === "pending")).map((x) => (x.party || "").trim()).filter(Boolean))];
+
+  // remember that this sender/merchant text means this party, so next time it is suggested straight away
+  const learnAlias = (next, row, party) => {
+    const key = (row.parsed_merchant || "").trim().toLowerCase();
+    if (!key || key.length < 3 || party.toLowerCase().includes(key) || key.includes(party.toLowerCase())) return next;
+    return { ...next, partyAliases: { ...(next.partyAliases || {}), [key]: party } };
   };
 
-  useEffect(() => { refresh(); }, []);
-
-  const importOne = async (row) => {
-    const d = drafts[row.id];
-    const amt = parseFloat(d.amount);
-    if (!amt || amt <= 0) return;
-    setLoading(true);
-    const today = todayISO();
-    if (d.type === "income") {
-      const fundDelta = {};
-      const fundBalances = { ...data.fundBalances };
-      data.funds.forEach((f) => {
-        const share = Math.round((amt * f.pct) / 100);
-        fundDelta[f.id] = share;
-        fundBalances[f.id] = (fundBalances[f.id] || 0) + share;
-      });
-      const entry = { id: Date.now(), amount: amt, source: d.category || "SMS Import", note: row.raw_message.slice(0, 80), date: today, fundDelta };
-      const next = registerActivity({ ...data, income: [...data.income, entry], fundBalances }, 3);
-      await persist(next);
-      triggerNoteAnim(amt, "in");
-    } else {
-      const fundDelta = {};
-      const fundBalances = { ...data.fundBalances };
-      data.funds.forEach((f) => {
-        const share = Math.round((amt * f.pct) / 100);
-        fundDelta[f.id] = -share;
-        fundBalances[f.id] = (fundBalances[f.id] || 0) - share;
-      });
-      const entry = { id: Date.now(), amount: amt, category: d.category || "Other", note: row.raw_message.slice(0, 80), date: today, unnecessary: false, fine: 0, fundDelta };
-      const next = registerActivity({ ...data, expenses: [...data.expenses, entry], fundBalances }, 3);
-      await persist(next);
-      triggerNoteAnim(amt, "out");
-    }
-    await updateSmsStatus(row.id, "imported");
-    setToast("SMS IMPORTED");
-    setTimeout(() => setToast(null), 1400);
-    setLoading(false);
-    refresh();
+  const saveAlloc = async (amounts, account) => {
+    const { row, kind, party } = alloc;
+    let next = data, total = 0;
+    Object.entries(amounts).forEach(([id, amt]) => {
+      next = kind === "sale" ? applySalePayment(next, Number(id), amt, today, account) : applyDueSettlement(next, kind, Number(id), amt, today, account);
+      total += amt;
+    });
+    next = learnAlias(registerActivity(next, 3), row, party);
+    setBusy(true);
+    await persist(next);
+    triggerNoteAnim(total, kind === "payable" ? "out" : "in");
+    setAlloc(null); setBusy(false);
+    await done(row, "imported");
+    toast(`${party.toUpperCase()} ME ${fmt(total)} LAG GAYA`);
   };
 
-  const ignoreOne = async (row) => {
-    await updateSmsStatus(row.id, "ignored");
-    refresh();
+  const savePlain = async (row, isIn, override) => {
+    const p = { ...(pick[row.id] || {}), ...(override || {}) };
+    const amt = parseFloat(p.amount ?? row.parsed_amount);
+    if (!amt || amt <= 0 || !p.label) return;
+    const fundDelta = fundDeltaForAmount(data.funds, amt, isIn ? 1 : -1);
+    const fundBalances = swapFundDelta(data.fundBalances, null, fundDelta);
+    const note = (row.parsed_merchant || row.raw_message || "").slice(0, 80);
+    const scope = p.scope || (isIn ? (BIZ_INCOME_SOURCES.includes(p.label) ? "business" : "personal") : (BIZ_EXPENSE_CATS.includes(p.label) ? "business" : "personal"));
+    let next = isIn
+      ? { ...data, fundBalances, income: [...data.income, { id: nextId(), amount: amt, source: p.label, note, date: today, fundDelta, scope }] }
+      : { ...data, fundBalances, expenses: [...data.expenses, { id: nextId(), amount: amt, category: p.label, note, date: today, unnecessary: false, fine: 0, fundDelta, photo: null, scope }] };
+    const mKey = (row.parsed_merchant || "").trim().toLowerCase();
+    if (!isIn && mKey.length >= 3) next = { ...next, merchantMap: { ...(next.merchantMap || {}), [mKey]: { category: p.label, scope } } };
+    next = registerActivity(next, 3);
+    setBusy(true);
+    await persist(next);
+    triggerNoteAnim(amt, isIn ? "in" : "out");
+    setBusy(false);
+    await done(row, "imported");
+    toast("ENTRY SAVED");
   };
 
   if (pending.length === 0) return null;
+  const chip = (active, color) => ({ background: active ? color : T.bg, color: active ? T.bg : T.ivory, border: `1px solid ${active ? color : T.line}`, borderRadius: T.radiusPill, padding: "6px 10px", fontSize: 10.5, fontWeight: 700 });
 
   return (
-    <>
-      <button style={S.smsBanner} onClick={() => setOpen(true)}>
-        📩 {pending.length} SMS IMPORT{pending.length > 1 ? "S" : ""} WAITING FOR REVIEW
-      </button>
-      {open && (
-        <div style={S.calcOverlay} onClick={() => setOpen(false)}>
-          <div style={S.calcModal} onClick={(e) => e.stopPropagation()}>
-            <div style={S.calcHeader}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: T.ivory }}>SMS IMPORTS</div>
-              <button style={S.calcCloseBtn} onClick={() => setOpen(false)}><X size={16} color={T.ivory} /></button>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10, maxHeight: 400, overflowY: "auto" }}>
-              {pending.map((row) => {
-                const d = drafts[row.id] || { amount: "", type: "expense", category: "" };
-                return (
-                  <div key={row.id} style={S.formCard}>
-                    <div style={{ fontSize: 10, color: T.muted, fontStyle: "italic", marginBottom: 6 }}>{row.raw_message.slice(0, 100)}</div>
-                    <div style={S.formRow}>
-                      <select value={d.type} onChange={(e) => setDrafts({ ...drafts, [row.id]: { ...d, type: e.target.value } })} style={S.select}>
-                        <option value="income">Income</option>
-                        <option value="expense">Expense</option>
-                      </select>
-                      <AmountInput value={d.amount} onChange={(v) => setDrafts({ ...drafts, [row.id]: { ...d, amount: v } })} style={S.input} className="tnum" />
-                    </div>
-                    <input type="text" value={d.category} onChange={(e) => setDrafts({ ...drafts, [row.id]: { ...d, category: e.target.value } })} style={{ ...S.input, width: "100%" }} placeholder="category/source" />
-                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                      <button style={{ ...S.submitBtnGreen, flex: 1 }} className="npop" onClick={() => importOne(row)} disabled={loading}>IMPORT</button>
-                      <button style={{ ...S.submitBtnOrange, flex: 1 }} className="npop" onClick={() => ignoreOne(row)}>IGNORE</button>
-                    </div>
+    <div style={{ marginBottom: 16 }}>
+      <SectionLabel text={`BANK / MAIL SE AAYA · ${pending.length} CONFIRM KARO`} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {pending.slice(0, 8).map((row) => {
+          const isIn = row.parsed_type === "credit";
+          const sug = inboxSuggest(row, data);
+          const p = pick[row.id] || {};
+          const setP = (patch) => setPick({ ...pick, [row.id]: { ...p, ...patch } });
+          const color = isIn ? T.green : T.orange;
+          const fromMail = String(row.sender || "").toLowerCase().startsWith("mail");
+          const matchKind = p.matchKind || (isIn ? "sale" : "payable");
+          const partyOptions = isIn ? [...openParties("sale").map((n) => ["sale", n]), ...openParties("receivable").map((n) => ["receivable", n])] : openParties("payable").map((n) => ["payable", n]);
+          return (
+            <div key={row.id} style={{ ...S.formCard, marginTop: 0, gap: 8, borderLeft: `3px solid ${color}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>{isIn ? "Paisa aaya" : row.parsed_type === "debit" ? "Paisa gaya" : "Transaction"}{row.parsed_merchant ? ` · ${row.parsed_merchant}` : ""} <span style={{ ...S.fineTag, color: T.muted }}>{fromMail ? "MAIL" : "SMS"}</span></div>
+                  <div style={{ fontSize: 10, color: T.muted, lineHeight: 1.45, marginTop: 3 }}>{(row.raw_message || "").slice(0, 150)}</div>
+                </div>
+                <div style={{ fontSize: 15, fontWeight: 700, color, flexShrink: 0 }} className="tnum">{row.parsed_amount ? `${isIn ? "+" : "−"}${fmt(Number(row.parsed_amount))}` : "?"}</div>
+              </div>
+
+              {(sug.kind === "sale" || sug.kind === "receivable" || sug.kind === "payable") && (
+                <button style={{ ...S.submitBtnGreen, background: color, boxShadow: "none", padding: "10px" }} className="npop" disabled={busy} onClick={() => setAlloc({ row, kind: sug.kind, party: sug.party })}>
+                  {sug.party.toUpperCase()} KI ENTRIES ME LAGAO →
+                </button>
+              )}
+              {sug.kind === "expense" && !p.mode && (
+                <button style={{ ...S.submitBtnGreen, background: color, boxShadow: "none", padding: "10px" }} className="npop" disabled={busy} onClick={() => savePlain(row, false, { label: sug.category, scope: sug.scope })}>
+                  PICHHLI BAAR JAISA: {String(sug.category).toUpperCase()} ({sug.scope}) — SAVE
+                </button>
+              )}
+
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {partyOptions.length > 0 && <button onClick={() => setP({ mode: p.mode === "party" ? null : "party" })} style={chip(p.mode === "party", T.blue)}>{isIn ? "KISI PARTY KA HAI" : "KISI KO DIYA (DUE)"}</button>}
+                <button onClick={() => setP({ mode: p.mode === "plain" ? null : "plain" })} style={chip(p.mode === "plain", color)}>{isIn ? "SEEDHI INCOME" : "KHARCHA"}</button>
+                <button onClick={() => done(row, "ignored")} style={chip(false, T.muted)}>HATAO (MERA NAHI / TRANSFER)</button>
+              </div>
+
+              {p.mode === "party" && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {partyOptions.map(([k, n]) => <button key={k + n} onClick={() => setAlloc({ row, kind: k, party: n })} style={chip(false, T.blue)}>{n}{k === "receivable" ? " (due)" : ""}</button>)}
+                </div>
+              )}
+              {p.mode === "plain" && (
+                <>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {(isIn ? [...BIZ_INCOME_SOURCES, "Personal"] : [...BIZ_EXPENSE_CATS, ...PERSONAL_EXPENSE_CATS, "Other"]).map((c) => <button key={c} onClick={() => setP({ label: c })} style={chip(p.label === c, color)}>{BIZ_CHIP_LABEL[c] || c}</button>)}
                   </div>
-                );
-              })}
+                  {p.label === "Other" && (
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {["business", "personal"].map((sc) => <button key={sc} onClick={() => setP({ scope: sc })} style={chip(p.scope === sc, T.blue)}>{sc.toUpperCase()}</button>)}
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <AmountInput value={p.amount ?? String(row.parsed_amount ?? "")} onChange={(v) => setP({ amount: v })} placeholder="amount" style={{ ...S.input, flex: 1 }} className="tnum" />
+                    <button style={{ ...S.submitBtnGreen, padding: "9px 16px", opacity: p.label && (p.label !== "Other" || p.scope) ? 1 : 0.45 }} className="npop" disabled={busy || !p.label || (p.label === "Other" && !p.scope)} onClick={() => savePlain(row, isIn)}>SAVE</button>
+                  </div>
+                </>
+              )}
             </div>
-          </div>
-        </div>
-      )}
-    </>
+          );
+        })}
+      </div>
+
+      {alloc && (() => {
+        const { row, kind, party } = alloc;
+        const rows = kind === "sale"
+          ? (data.sales || []).filter((x) => saleBalance(x) > 0 && (x.party || "").trim() === party).sort((a, b) => (a.dueDate || a.date).localeCompare(b.dueDate || b.date) || a.id - b.id).map((x) => ({ id: x.id, label: x.item || `sale ${fmt(x.saleValue)}`, sub: `${fmtDateShort(x.date)}${x.dueDate ? ` · due ${fmtDateShort(x.dueDate)}` : ""}`, balance: saleBalance(x) }))
+          : (data[kind === "receivable" ? "receivables" : "payables"] || []).filter((r) => r.status === "pending" && (r.party || "").trim() === party).sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999") || a.id - b.id).map((r) => ({ id: r.id, label: r.note || "—", sub: r.dueDate ? `due ${fmtDateShort(r.dueDate)}` : "no date", balance: r.amount }));
+        if (rows.length === 0) return null;
+        return <AllocEditor title={`${party.toUpperCase()} — ${row.parsed_amount ? fmt(Number(row.parsed_amount)) : ""} ${kind === "payable" ? "DIYA" : "AAYA"}`} verb={kind === "payable" ? "DIYA" : "AAYA"} rows={rows} accent={kind === "payable" ? T.orange : T.green} initialTotal={row.parsed_amount ? String(row.parsed_amount) : ""} onSave={saveAlloc} onCancel={() => setAlloc(null)} />;
+      })()}
+    </div>
   );
 }
+
 
 function RuthlessPushBanner({ data }) {
   const message = useMemo(() => ruthlessPush(data), [data.income, data.expenses, data.profitTargets]);
@@ -5247,9 +5302,10 @@ function removeDuePayment(data, kind, entryId, paymentId) {
 }
 
 // Split one amount across several open entries: type the total and it fills oldest-first, or edit any row by hand.
-function AllocEditor({ title, rows, accent, onSave, onCancel, verb }) {
-  const [amounts, setAmounts] = useState({});
-  const [total, setTotal] = useState("");
+function AllocEditor({ title, rows, accent, onSave, onCancel, verb, initialTotal }) {
+  const firstSpread = (v) => { let left = parseFloat(v) || 0; const o = {}; rows.forEach((r) => { const take = Math.min(left, r.balance); o[r.id] = take > 0 ? String(take) : ""; left -= take; }); return o; };
+  const [amounts, setAmounts] = useState(() => (initialTotal ? firstSpread(initialTotal) : {}));
+  const [total, setTotal] = useState(initialTotal || "");
   const [account, setAccount] = useState("none");
   const sum = rows.reduce((a, r) => a + (parseFloat(amounts[r.id]) || 0), 0);
   const over = rows.some((r) => (parseFloat(amounts[r.id]) || 0) > r.balance);
