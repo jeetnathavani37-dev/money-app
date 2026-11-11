@@ -5321,7 +5321,7 @@ function SignInBox() {
   }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      <a href="https://luxella-b2b.vercel.app/?money=1" style={{ ...S.submitBtnGreen, textAlign: "center", textDecoration: "none", display: "block" }} className="npop">LUXELLA PORTAL SE LOGIN (EK TAP)</a>
+      <a href="https://luxella-client.vercel.app/?money=1" style={{ ...S.submitBtnGreen, textAlign: "center", textDecoration: "none", display: "block" }} className="npop">LUXELLA PORTAL SE LOGIN (EK TAP)</a>
       <div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.5 }}>Portal me login ho to seedha yahan login ho jaoge — na password, na mail. Ya neeche email wala tarika:</div>
       <input type="email" autoComplete="username" placeholder="email" value={email} onChange={(e) => setEmail(e.target.value)} style={{ ...S.input, width: "100%" }} />
       {!usePw && <button style={{ ...S.submitBtnGreen, opacity: busy ? 0.6 : 1 }} className="npop" onClick={send} disabled={busy}>{busy && !sent ? "BHEJ RAHA HAI…" : sent ? "DOBARA BHEJO" : "EMAIL PAR LOGIN LINK BHEJO"}</button>}
