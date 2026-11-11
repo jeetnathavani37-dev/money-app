@@ -2227,6 +2227,22 @@ export default function Khata() {
     }
   }, []);
 
+  // pull the Luxella portal's orders into Sales (signed-in only — the feed is private)
+  const feedDoneRef = useRef(false);
+  useEffect(() => {
+    if (!data || feedDoneRef.current || !authSession) return;
+    feedDoneRef.current = true;
+    (async () => {
+      try {
+        const rows = await loadPortalFeed();
+        const r = syncPortalFeed(dataRef.current, rows);
+        if (r.next === dataRef.current) return;
+        await persist(r.next);
+        if (r.added || r.settled) { setToast(`LUXELLA PORTAL: ${r.added ? `${r.added} SALE AAYE` : ""}${r.added && r.settled ? " · " : ""}${r.settled ? `${r.settled} SETTLE` : ""}`); setTimeout(() => setToast(null), 3500); }
+      } catch { /* portal feed is optional */ }
+    })();
+  }, [data, persist]);
+
   const registerActivity = useCallback((base, xpGain) => {
     const today = todayISO();
     let streak = { ...base.streak };
@@ -5508,6 +5524,80 @@ function removeSalePayment(data, saleId, paymentId) {
     sales: data.sales.map((s) => (s.id === saleId ? { ...s, payments: s.payments.filter((p) => p.id !== paymentId) } : s)),
   }, saleId);
 }
+// ---- Luxella portal → Sales. Each portal order is its own sale; a payout marked Received in the portal
+// settles it. Pure: returns { next, added, settled } and leaves `data` untouched when nothing changed.
+async function loadPortalFeed() {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/khata_lx_feed?select=order_id,data`, { headers: await sbHeaders() });
+  if (!res.ok) throw new Error(`feed ${res.status}`);
+  return (await res.json()).map((r) => ({ id: r.order_id, ...(r.data || {}) }));
+}
+function syncPortalFeed(data, rows) {
+  const firstName = (x) => String(x || "").trim().toLowerCase().split(/\s+/)[0];
+  const isDate = (x) => /^\d{4}-\d{2}-\d{2}$/.test(x || "");
+  const addDays = (iso, n) => { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  let next = { ...data, sales: [...(data.sales || [])] };
+  let added = 0, settled = 0, touched = false;
+  const idBase = Date.now() + 1000;
+  const covered = new Set(next.sales.flatMap((x) => x.lxCovers || []));
+  const find = (id) => next.sales.find((x) => x.lxOrder === id);
+  // a sale he already wrote by hand for the same orders (same person, same total) stays the one record
+  const fresh = rows.filter((r) => !r.off && r.payout > 0 && r.payout_status !== "Received" && !find(r.id) && !covered.has(r.id));
+  const groups = {};
+  fresh.forEach((r) => { (groups[firstName(r.client)] = groups[firstName(r.client)] || []).push(r); });
+  Object.entries(groups).forEach(([name, list]) => {
+    const total = list.reduce((a, r) => a + r.payout, 0);
+    const manual = next.sales.find((x) => !x.lxOrder && !x.lxCovers && firstName(x.party) === name && Math.round(x.saleValue) === Math.round(total));
+    if (!manual) return;
+    const landed = list.every((r) => r.landed > 0) ? list.reduce((a, r) => a + r.landed, 0) : null;
+    next.sales = next.sales.map((x) => (x.id === manual.id ? { ...x, lxCovers: list.map((r) => r.id), cost: x.cost > 0 ? x.cost : landed } : x));
+    list.forEach((r) => covered.add(r.id));
+    touched = true;
+    if (landed && !(manual.cost > 0)) next = rebuildSaleCogs(next, manual.id);
+  });
+  rows.forEach((r) => {
+    if (covered.has(r.id)) return;
+    let sale = find(r.id);
+    const due = isDate(r.payout_due) ? r.payout_due : (/kicks ?machine/i.test(r.client) && isDate(r.delivered_km) ? addDays(r.delivered_km, 7) : null);
+    const note = `Luxella portal · ${r.id}${r.status ? ` · ${r.status}` : ""}`;
+    if (r.off) {
+      if (sale && !(sale.payments || []).length) { next.sales = next.sales.filter((x) => x.id !== sale.id); touched = true; }
+      return;
+    }
+    if (!(r.payout > 0)) return;
+    if (!sale) {
+      const known = next.sales.find((x) => firstName(x.party) === firstName(r.client) && x.channel);
+      const channel = /kicks ?machine|sourcex/i.test(r.client) ? "B2B" : (known ? known.channel : "Client");
+      sale = { id: idBase + added, date: isDate(r.order_date) ? r.order_date : todayISO(), party: r.client, channel, item: r.item || "", saleValue: r.payout, cost: r.landed > 0 ? r.landed : null, dueDate: due, payments: [], note, costLogged: false, lxOrder: r.id };
+      next.sales.push(sale); added++; touched = true;
+    } else {
+      const patch = {};
+      if (sale.saleValue !== r.payout) patch.saleValue = r.payout;
+      if (r.landed > 0 && sale.cost !== r.landed) patch.cost = r.landed;
+      if ((sale.dueDate || null) !== due && due) patch.dueDate = due;
+      if (sale.note !== note && /^Luxella portal/.test(sale.note || "")) patch.note = note;
+      if (Object.keys(patch).length) {
+        next.sales = next.sales.map((x) => (x.id === sale.id ? { ...x, ...patch } : x)); touched = true;
+        if ((patch.saleValue !== undefined || patch.cost !== undefined) && (sale.payments || []).length) next = rebuildSaleCogs(next, sale.id);
+        sale = find(r.id);
+      }
+    }
+    if (r.payout_status === "Received" && saleBalance(sale) > 0) {
+      const when = isDate(r.payout_date) ? r.payout_date : todayISO();
+      // money the portal already booked as a loose income for this order becomes this sale's payment
+      const loose = next.income.find((e) => e.lxOrder === r.id && !e.saleId);
+      if (loose) {
+        next = { ...next, income: next.income.map((e) => (e.id === loose.id ? { ...e, saleId: sale.id } : e)), sales: next.sales.map((x) => (x.id === sale.id ? { ...x, payments: [...(x.payments || []), { id: nextId(), date: loose.date, amount: loose.amount, incomeId: loose.id }] } : x)) };
+        next = rebuildSaleCogs(next, sale.id);
+      } else {
+        next = applySalePayment(next, sale.id, saleBalance(sale), when);
+        next = { ...next, income: next.income.map((e) => (e.saleId === sale.id && !e.lxOrder ? { ...e, lxOrder: r.id } : e)) };
+      }
+      settled++; touched = true;
+    }
+  });
+  return touched ? { next, added, settled } : { next: data, added: 0, settled: 0 };
+}
+
 function salesOutstanding(data, today) {
   const open = (data.sales || []).filter((s) => saleBalance(s) > 0);
   const overdue = open.filter((s) => saleStatus(s, today) === "overdue");

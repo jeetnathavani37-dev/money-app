@@ -332,3 +332,9 @@ he has categorised before → one-tap repeat. What he teaches is kept in `data.p
 `mail` for mail-derived items. KicksMachine/Sourcex payouts should reach the books through the
 Luxella portal (order level), not through this inbox, or they would be counted twice.
 `todayISO()` now returns the local date (it used the UTC date, which is yesterday before 5:30 AM IST).
+
+## Portal → Sales sync, auto-lock, passwordless login (11 Nov)
+- `khata_lx_feed` (owner-only) is kept by trigger `lx_khata_feed_sync_t` on `lx_b2b`: one compact row per portal order (client, item, payout, landed, due, status, payout_status, off). Backfilled with every order still awaiting payout; orders already Received before the feed existed are never added.
+- App (signed-in only): `loadPortalFeed` + `syncPortalFeed` run once after load — each order becomes its own sale (`lxOrder`), cost = portal landed, KM due = delivered_km + 7d; payout Received settles it (reusing a loose `lxOrder` income from `lx_khata_income_sync_t` if one exists, so nothing is counted twice); cancelled/archived unpaid orders are removed. A hand-written sale with the same person and same total keeps the orders (`lxCovers`) instead of duplicating.
+- Anon policies on khata_state / telegram_chat / broker_sessions now use `khata_public_open()` = no row in `khata_auth_log`; the first successful owner sign-in ends public access automatically. The Telegram bot (publishable key) stops at that point until it gets a server-side key.
+- Sign-in: mailed link/code (`sendLoginLink`, `verifyLoginInput`), password still available.
