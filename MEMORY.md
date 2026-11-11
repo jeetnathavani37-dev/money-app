@@ -339,3 +339,4 @@ Luxella portal (order level), not through this inbox, or they would be counted t
 - Anon policies on khata_state / telegram_chat / broker_sessions now use `khata_public_open()` = no row in `khata_auth_log`; the first successful owner sign-in ends public access automatically. The Telegram bot (publishable key) stops at that point until it gets a server-side key.
 - Sign-in: mailed link/code (`sendLoginLink`, `verifyLoginInput`), password still available.
 - Sales tab (11 Nov): "PAISA KAB AAYEGA" cash-in buckets by due date (tap to filter), low-margin flag (below bizSettings.minMargin on cost) with filter, search by name / item / order id.
+- Party card: copy one statement for all open entries, or only the late ones (`partyStatementText`).

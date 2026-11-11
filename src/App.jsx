@@ -5451,6 +5451,14 @@ function saleReminderText(s) {
   const when = s.dueDate ? ` was due on ${fmtDate(s.dueDate)}` : " is pending";
   return `Hello ${s.party}, a gentle reminder from Luxella — the balance of ${fmt(bal)}${what}${when}. Kindly arrange it at your convenience so we can keep everything moving smoothly. Thank you.`;
 }
+// one message for a buyer covering every open entry (or only the late ones) — order id, item, balance, due date, total
+function partyStatementText(party, sales, today, lateOnly) {
+  const rows = sales.filter((x) => saleBalance(x) > 0 && (!lateOnly || saleStatus(x, today) === "overdue")).sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
+  if (!rows.length) return "";
+  const total = rows.reduce((a, x) => a + saleBalance(x), 0);
+  const lines = rows.map((x, i) => `${i + 1}. ${x.lxOrder ? `${x.lxOrder} · ` : ""}${x.item || "Order"} — ${fmt(saleBalance(x))}${x.dueDate ? ` (due ${fmtDate(x.dueDate)}${saleStatus(x, today) === "overdue" ? `, ${dayDiff(x.dueDate, today)} days late` : ""})` : ""}`);
+  return `Hello ${party}, sharing the ${lateOnly ? "overdue" : "pending"} payments with Luxella:\n\n${lines.join("\n")}\n\nTotal ${lateOnly ? "overdue" : "pending"}: ${fmt(total)} (${rows.length} order${rows.length === 1 ? "" : "s"}).\nKindly arrange it at your convenience. Thank you.`;
+}
 const saleReceived = (s) => (s.payments || []).reduce((a, p) => a + (p.amount || 0), 0);
 const saleBalance = (s) => Math.max(0, (s.saleValue || 0) - saleReceived(s));
 const dayDiff = (a, b) => Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);
@@ -5997,6 +6005,12 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
               <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 10, cursor: "default" }}>
                 {g.open.length > 1 && (
                   <button style={{ ...S.submitBtnGreen, width: "100%", padding: "10px" }} className="npop" onClick={() => setAlloc(g.party)}>PAISA AAYA — {g.open.length} ENTRIES ME BAANTO</button>
+                )}
+                {g.open.length > 0 && (
+                  <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 10 }}>
+                    <button style={S.correctionLink} onClick={async () => { const ok = await copyToClipboard(partyStatementText(g.party, g.sales, today, false)); setToast(ok ? `${g.open.length} ENTRIES KA HISAAB COPIED` : "COPY NAHI HUA"); setTimeout(() => setToast(null), 1800); }}>POORA BAAKI HISAAB COPY ({g.open.length})</button>
+                    {g.overdue > 0 && <button style={{ ...S.correctionLink, color: T.orange }} onClick={async () => { const ok = await copyToClipboard(partyStatementText(g.party, g.sales, today, true)); setToast(ok ? `${g.overdue} LATE ENTRIES KA REMINDER COPIED` : "COPY NAHI HUA"); setTimeout(() => setToast(null), 1800); }}>SIRF LATE WALA REMINDER ({g.overdue})</button>}
+                  </div>
                 )}
                 {g.shown.map((s) => renderSaleRef.current(s))}
                 {g.shown.length === 0 && <div style={{ fontSize: 10.5, color: T.muted, marginTop: 8 }}>is filter me is party ki koi entry nahi</div>}
