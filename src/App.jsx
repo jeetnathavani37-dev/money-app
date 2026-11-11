@@ -115,6 +115,18 @@ let cameFromLink = false, linkError = null;
     if (cameFromLink || linkError) window.history.replaceState(null, "", window.location.pathname);
   } catch { /* ignore */ }
 })();
+// arriving from the Luxella portal with a single-use pass (#lxpass=…): trade it for this app's own session
+const passLogin = (async () => {
+  try {
+    const h = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const pass = h.get("lxpass");
+    if (!pass) return;
+    window.history.replaceState(null, "", window.location.pathname);
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/verify`, { method: "POST", headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" }, body: JSON.stringify({ type: "magiclink", token_hash: pass }) });
+    const j = await res.json().catch(() => ({}));
+    if (res.ok && j.access_token) { saveAuth(sessFromAuth(j)); cameFromLink = true; } else linkError = "pass";
+  } catch { linkError = "pass"; }
+})();
 
 // tells the server this device really works signed-in (so the public access can be switched off safely)
 async function touchAuth() {
@@ -2163,6 +2175,7 @@ export default function Khata() {
   useEffect(() => {
     (async () => {
       try {
+        await passLogin;
         const remote = await loadFromSupabase();
         if (!remote.data) { setGate(authSession ? "noaccess" : "login"); return; }
         touchAuth();
@@ -5283,14 +5296,14 @@ function SignInBox() {
   const [email, setEmail] = useState((authSession && authSession.email) || "");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState(linkError ? "Link purana ho gaya ya use ho chuka. Naya bhejo." : null);
+  const [err, setErr] = useState(linkError === "pass" ? "Portal wala pass nahi chala. Portal se dobara kholo." : linkError ? "Link purana ho gaya ya use ho chuka. Naya bhejo." : null);
   const [sent, setSent] = useState(false);
   const [code, setCode] = useState("");
   const [usePw, setUsePw] = useState(false);
   const run = async (fn) => {
     if (busy) return;
     setBusy(true); setErr(null);
-    try { await fn(); } catch (e) { setErr(/invalid login/i.test(String(e.message)) ? "Email ya password galat hai." : /rate|seconds|too many/i.test(String(e.message)) ? "Abhi abhi mail gaya hai. 1 minute ruk kar dobara bhejo." : /not found|signups not allowed/i.test(String(e.message)) ? "Ye email owner account nahi hai." : String(e.message).replace(/^Error:\s*/, "")); }
+    try { await fn(); } catch (e) { setErr(/invalid login/i.test(String(e.message)) ? "Email ya password galat hai." : /email rate limit/i.test(String(e.message)) ? "Mail ki limit khatam (ek ghante me 2 hi mail jaate hain). Neeche portal wale button se login karo." : /rate|seconds|too many/i.test(String(e.message)) ? "Abhi abhi mail gaya hai. 1 minute ruk kar dobara bhejo." : /not found|signups not allowed/i.test(String(e.message)) ? "Ye email owner account nahi hai." : String(e.message).replace(/^Error:\s*/, "")); }
     setBusy(false);
   };
   const done = async () => { await touchAuth(); window.location.reload(); };
@@ -5308,7 +5321,8 @@ function SignInBox() {
   }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.5 }}>Password ki zaroorat nahi. Apna owner email daalo, mail me login link aayega.</div>
+      <a href="https://luxella-b2b.vercel.app/?money=1" style={{ ...S.submitBtnGreen, textAlign: "center", textDecoration: "none", display: "block" }} className="npop">LUXELLA PORTAL SE LOGIN (EK TAP)</a>
+      <div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.5 }}>Portal me login ho to seedha yahan login ho jaoge — na password, na mail. Ya neeche email wala tarika:</div>
       <input type="email" autoComplete="username" placeholder="email" value={email} onChange={(e) => setEmail(e.target.value)} style={{ ...S.input, width: "100%" }} />
       {!usePw && <button style={{ ...S.submitBtnGreen, opacity: busy ? 0.6 : 1 }} className="npop" onClick={send} disabled={busy}>{busy && !sent ? "BHEJ RAHA HAI…" : sent ? "DOBARA BHEJO" : "EMAIL PAR LOGIN LINK BHEJO"}</button>}
       {sent && !usePw && (
