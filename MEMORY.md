@@ -340,3 +340,4 @@ Luxella portal (order level), not through this inbox, or they would be counted t
 - Sign-in: mailed link/code (`sendLoginLink`, `verifyLoginInput`), password still available.
 - Sales tab (11 Nov): "PAISA KAB AAYEGA" cash-in buckets by due date (tap to filter), low-margin flag (below bizSettings.minMargin on cost) with filter, search by name / item / order id.
 - Party card: copy one statement for all open entries, or only the late ones (`partyStatementText`).
+- KicksMachine MRN rule (11 Nov): a KM portal order is `pipeline: true` until the portal has `mrn_confirmed`; pipeline sales are excluded from `salesOutstanding().open` (To Receive, overdue, insights, statements) and shown as MRN BAAKI. Due date (delivered_km + 7d) is set only after MRN.

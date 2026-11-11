@@ -731,7 +731,7 @@ function computeFinancialData(data, args = {}) {
     trend: computeTrends(data),
     open_sales: (data.sales || []).filter((x) => saleBalance(x) > 0).map((x) => ({
       party: x.party, channel: x.channel, item: x.item || "", sale_value: x.saleValue, received: saleReceived(x), balance: saleBalance(x),
-      sold_on: x.date, due_date: x.dueDate, days_overdue: x.dueDate && x.dueDate < todayISO() ? Math.round((new Date(todayISO()) - new Date(x.dueDate)) / 86400000) : 0,
+      sold_on: x.date, due_date: x.dueDate, mrn_pending_not_yet_receivable: !!x.pipeline, days_overdue: x.dueDate && x.dueDate < todayISO() ? Math.round((new Date(todayISO()) - new Date(x.dueDate)) / 86400000) : 0,
     })),
     open_dues: {
       they_owe_me: (data.receivables || []).filter((r) => r.status === "pending").map((r) => ({ party: r.party, amount: r.amount, due_date: r.dueDate || null })),

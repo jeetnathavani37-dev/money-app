@@ -1492,7 +1492,7 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
     const openRecv = data.receivables.filter((r) => r.status === "pending").map((r) => `${r.party} owes me ₹${r.amount}`);
     const openPay = data.payables.filter((r) => r.status === "pending").map((r) => `I owe ${r.party} ₹${r.amount}`);
     const pendingOrders = data.investments.filter((i) => String(i.status || "").startsWith("pending_landing")).map((i) => i.name).slice(-8);
-    const openSales = (data.sales || []).filter((x) => saleBalance(x) > 0).map((x) => `${x.party} [${x.channel}]${x.item ? ` ${x.item}` : ""}: ₹${saleBalance(x)} baaki of ₹${x.saleValue}, sold ${x.date}, ${x.dueDate ? (x.dueDate < today ? `OVERDUE by ${dayDiff(x.dueDate, today)} days (due ${x.dueDate})` : `due ${x.dueDate}`) : "no due date"}`);
+    const openSales = (data.sales || []).filter((x) => saleBalance(x) > 0).map((x) => `${x.party} [${x.channel}]${x.item ? ` ${x.item}` : ""}: ₹${saleBalance(x)} baaki of ₹${x.saleValue}, sold ${x.date}, ${x.dueDate ? (x.dueDate < today ? `OVERDUE by ${dayDiff(x.dueDate, today)} days (due ${x.dueDate})` : `due ${x.dueDate}`) : "no due date"}${x.pipeline ? " — MRN PENDING: not yet receivable, do not count it as money due" : ""}`);
     const B = buildBrain();
     const intents = JAMES_INTENTS.map((i) => `"${i}" — ${JAMES_INTENT_DESC[i]}\n   fields: ${JAMES_FIELD_FLOWS[i].map((fd) => `${fd.key}${fd.optional ? " (optional)" : ""}: ${fd.label}`).join("; ") || "none"}`).join("\n");
     const convoText = threadSoFar.map((m) => `${m.from === "james" ? "James" : "User"}: ${m.text}`).join("\n");
@@ -5453,7 +5453,7 @@ function saleReminderText(s) {
 }
 // one message for a buyer covering every open entry (or only the late ones) — order id, item, balance, due date, total
 function partyStatementText(party, sales, today, lateOnly) {
-  const rows = sales.filter((x) => saleBalance(x) > 0 && (!lateOnly || saleStatus(x, today) === "overdue")).sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
+  const rows = sales.filter((x) => saleBalance(x) > 0 && !x.pipeline && (!lateOnly || saleStatus(x, today) === "overdue")).sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
   if (!rows.length) return "";
   const total = rows.reduce((a, x) => a + saleBalance(x), 0);
   const lines = rows.map((x, i) => `${i + 1}. ${x.lxOrder ? `${x.lxOrder} · ` : ""}${x.item || "Order"} — ${fmt(saleBalance(x))}${x.dueDate ? ` (due ${fmtDate(x.dueDate)}${saleStatus(x, today) === "overdue" ? `, ${dayDiff(x.dueDate, today)} days late` : ""})` : ""}`);
@@ -5465,6 +5465,7 @@ const dayDiff = (a, b) => Math.round((new Date(b + "T00:00:00") - new Date(a + "
 // "paid" | "overdue" | "partial" | "pending"
 function saleStatus(s, today) {
   if (saleBalance(s) <= 0) return "paid";
+  if (s.pipeline) return "pipeline"; // KicksMachine order with no MRN yet — sold, but the money is not receivable yet
   if (s.dueDate && s.dueDate < today) return "overdue";
   return saleReceived(s) > 0 ? "partial" : "pending";
 }
@@ -5565,7 +5566,10 @@ function syncPortalFeed(data, rows) {
   rows.forEach((r) => {
     if (covered.has(r.id)) return;
     let sale = find(r.id);
-    const due = isDate(r.payout_due) ? r.payout_due : (/kicks ?machine/i.test(r.client) && isDate(r.delivered_km) ? addDays(r.delivered_km, 7) : null);
+    // KicksMachine: the money becomes receivable only once their MRN (receiving note) is done
+    const isKm = /kicks ?machine/i.test(r.client);
+    const pipeline = isKm && !r.mrn && r.payout_status !== "Received";
+    const due = isDate(r.payout_due) ? r.payout_due : (isKm && r.mrn && isDate(r.delivered_km) ? addDays(r.delivered_km, 7) : null);
     const note = `Luxella portal · ${r.id}${r.status ? ` · ${r.status}` : ""}`;
     if (r.off) {
       if (sale && !(sale.payments || []).length) { next.sales = next.sales.filter((x) => x.id !== sale.id); touched = true; }
@@ -5575,13 +5579,15 @@ function syncPortalFeed(data, rows) {
     if (!sale) {
       const known = next.sales.find((x) => firstName(x.party) === firstName(r.client) && x.channel);
       const channel = /kicks ?machine|sourcex/i.test(r.client) ? "B2B" : (known ? known.channel : "Client");
-      sale = { id: idBase + added, date: isDate(r.order_date) ? r.order_date : todayISO(), party: r.client, channel, item: r.item || "", saleValue: r.payout, cost: r.landed > 0 ? r.landed : null, dueDate: due, payments: [], note, costLogged: false, lxOrder: r.id };
+      sale = { id: idBase + added, date: isDate(r.order_date) ? r.order_date : todayISO(), party: r.client, channel, item: r.item || "", saleValue: r.payout, cost: r.landed > 0 ? r.landed : null, dueDate: due, payments: [], note, costLogged: false, lxOrder: r.id, ...(pipeline ? { pipeline: true } : {}), ...(r.mrn ? { mrnDate: r.mrn } : {}) };
       next.sales.push(sale); added++; touched = true;
     } else {
       const patch = {};
       if (sale.saleValue !== r.payout) patch.saleValue = r.payout;
       if (r.landed > 0 && sale.cost !== r.landed) patch.cost = r.landed;
       if ((sale.dueDate || null) !== due && due) patch.dueDate = due;
+      if (!!sale.pipeline !== pipeline) patch.pipeline = pipeline;
+      if (r.mrn && sale.mrnDate !== r.mrn) patch.mrnDate = r.mrn;
       if (sale.note !== note && /^Luxella portal/.test(sale.note || "")) patch.note = note;
       if (Object.keys(patch).length) {
         next.sales = next.sales.map((x) => (x.id === sale.id ? { ...x, ...patch } : x)); touched = true;
@@ -5607,9 +5613,11 @@ function syncPortalFeed(data, rows) {
 }
 
 function salesOutstanding(data, today) {
-  const open = (data.sales || []).filter((s) => saleBalance(s) > 0);
+  const unpaid = (data.sales || []).filter((s) => saleBalance(s) > 0);
+  const open = unpaid.filter((s) => !s.pipeline);
+  const pipeline = unpaid.filter((s) => s.pipeline);
   const overdue = open.filter((s) => saleStatus(s, today) === "overdue");
-  return { open, overdue, total: open.reduce((a, s) => a + saleBalance(s), 0), overdueTotal: overdue.reduce((a, s) => a + saleBalance(s), 0) };
+  return { open, overdue, pipeline, pipelineTotal: pipeline.reduce((a, s) => a + saleBalance(s), 0), total: open.reduce((a, s) => a + saleBalance(s), 0), overdueTotal: overdue.reduce((a, s) => a + saleBalance(s), 0) };
 }
 
 function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }) {
@@ -5676,10 +5684,10 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
   const lowList = useMemo(() => sales.filter(isLow), [sales, minMargin]);
 
   const list = useMemo(() => {
-    const rank = { overdue: 0, partial: 1, pending: 1, paid: 2 };
+    const rank = { overdue: 0, partial: 1, pending: 1, pipeline: 1, paid: 2 };
     return sales
       .filter((s) => typeFilter === "ALL" || s.channel === typeFilter)
-      .filter((s) => { const st = saleStatus(s, today); return statusFilter === "all" || (statusFilter === "open" && st !== "paid") || (statusFilter === "overdue" && st === "overdue") || (statusFilter === "paid" && st === "paid"); })
+      .filter((s) => { const st = saleStatus(s, today); return statusFilter === "all" || (statusFilter === "open" && st !== "paid" && st !== "pipeline") || (statusFilter === "pipeline" && st === "pipeline") || (statusFilter === "overdue" && st === "overdue") || (statusFilter === "paid" && st === "paid"); })
       .filter((s) => !whenFilter || (saleBalance(s) > 0 && whenOf(s) === whenFilter))
       .filter((s) => !lowOnly || isLow(s))
       .filter((s) => { const t = q.trim().toLowerCase(); return !t || `${s.party} ${s.item} ${s.note} ${s.lxOrder || ""}`.toLowerCase().includes(t); })
@@ -5698,11 +5706,12 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
     const map = {};
     sales.filter((x) => typeFilter === "ALL" || x.channel === typeFilter).forEach((x) => { const k = (x.party || "—").trim(); (map[k] = map[k] || []).push(x); });
     return Object.entries(map).map(([party, arr]) => {
-      const open = arr.filter((x) => saleBalance(x) > 0);
+      const open = arr.filter((x) => saleBalance(x) > 0 && !x.pipeline);
+      const pipe = arr.filter((x) => saleBalance(x) > 0 && x.pipeline);
       const od = open.filter((x) => saleStatus(x, today) === "overdue");
       return {
         party, sales: arr, open, shown: list.filter((x) => (x.party || "—").trim() === party && shownIds.has(x.id)),
-        types: [...new Set(arr.map((x) => x.channel))],
+        types: [...new Set(arr.map((x) => x.channel))], pipeN: pipe.length, pipeBal: pipe.reduce((a, x) => a + saleBalance(x), 0),
         value: arr.reduce((a, x) => a + x.saleValue, 0), received: arr.reduce((a, x) => a + saleReceived(x), 0),
         balance: open.reduce((a, x) => a + saleBalance(x), 0), overdue: od.length, overdueBal: od.reduce((a, x) => a + saleBalance(x), 0),
         // how fast this buyer actually pays: sale date → the payment that cleared it, over fully paid sales
@@ -5761,6 +5770,7 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
   const statusTag = (s) => {
     const st = saleStatus(s, today);
     if (st === "paid") return { text: "PAID", color: T.green };
+    if (st === "pipeline") return { text: "MRN BAAKI · ABHI RECEIVABLE NAHI", color: T.muted };
     if (st === "overdue") return { text: `${dayDiff(s.dueDate, today)} DAYS OVERDUE`, color: T.orange };
     if (s.dueDate) { const d = dayDiff(today, s.dueDate); return { text: d === 0 ? "DUE TODAY" : `DUE IN ${d} D`, color: d <= 3 ? T.gold : T.muted }; }
     return { text: `${dayDiff(s.date, today)} D OLD · NO DUE DATE`, color: T.muted };
@@ -5784,6 +5794,12 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
           <div style={S.statBoxLabel}>OVERDUE · {out.overdue.length}</div>
           <div style={{ ...S.statBoxNum, color: out.overdue.length ? T.orange : T.muted }} className="tnum">{fmt(out.overdueTotal)}</div>
         </div>
+        {out.pipeline.length > 0 && (
+          <div style={{ ...S.statBox, gridColumn: "1 / -1", cursor: "pointer" }} onClick={() => setStatusFilter("pipeline")}>
+            <div style={S.statBoxLabel}>MRN BAAKI · {out.pipeline.length} ORDER · ABHI RECEIVABLE NAHI</div>
+            <div style={{ ...S.statBoxNum, color: T.muted }} className="tnum">{fmt(out.pipelineTotal)}</div>
+          </div>
+        )}
         <div style={S.statBox}>
           <div style={S.statBoxLabel}>SOLD THIS MONTH</div>
           <div style={{ ...S.statBoxNum, color: T.ivory }} className="tnum">{fmt(soldThisMonth)}</div>
@@ -5892,7 +5908,7 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
         ))}
       </div>
       <div style={{ ...S.toggleWrap, marginTop: 10 }}>
-        {[["open", "OPEN"], ["overdue", "OVERDUE"], ["paid", "PAID"], ["all", "ALL"]].map(([k, l]) => (
+        {[["open", "OPEN"], ["overdue", "OVERDUE"], ...(out.pipeline.length ? [["pipeline", "MRN BAAKI"]] : []), ["paid", "PAID"], ["all", "ALL"]].map(([k, l]) => (
           <button key={k} onClick={() => setStatusFilter(k)} style={{ ...S.toggleBtn, flex: 1, padding: "9px 4px", ...(statusFilter === k ? { background: T.surface, color: T.ivory, boxShadow: `inset 0 0 0 1px ${T.lineStrong}` } : {}) }}>{l}</button>
         ))}
       </div>
@@ -5960,7 +5976,7 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
 
             {isOpen && (
               <div style={{ borderTop: `1px solid ${T.line}`, paddingTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-                <div style={{ fontSize: 10.5, color: T.muted, fontWeight: 600 }}>{fmtDateShort(s.date)} · sale {fmt(s.saleValue)} bana{s.cost ? ` · cost ${fmt(s.cost)}` : ""}{s.note ? ` · ${s.note}` : ""}</div>
+                <div style={{ fontSize: 10.5, color: T.muted, fontWeight: 600 }}>{fmtDateShort(s.date)} · sale {fmt(s.saleValue)} bana{s.cost ? ` · cost ${fmt(s.cost)}` : ""}{s.mrnDate ? ` · MRN ${fmtDateShort(s.mrnDate)}` : ""}{s.note ? ` · ${s.note}` : ""}</div>
                 {(s.payments || []).length === 0 && <div style={{ fontSize: 10.5, color: T.muted }}>abhi tak koi payment nahi aaya</div>}
                 {(s.payments || []).map((p) => (
                   <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11.5, fontWeight: 600 }}>
@@ -5987,7 +6003,8 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
               <span style={S.budgetName}>{g.party.toUpperCase()} {g.types.map((t) => <span key={t} style={{ ...S.fineTag, color: SALE_TYPE_COLOR[t] || T.muted, borderColor: `${SALE_TYPE_COLOR[t] || T.muted}66` }}>{t.toUpperCase()}</span>)}</span>
               <span style={{ fontSize: 10, color: T.muted }} className="tnum">{g.open.length} OPEN · {g.sales.length} ENTR{g.sales.length === 1 ? "Y" : "IES"}</span>
             </div>
-            <div style={{ fontSize: 24, fontWeight: 700, color: g.balance > 0 ? T.blue : T.green, marginTop: 2 }} className="tnum">{g.balance > 0 ? fmt(g.balance) : "✓ SAB AAYA"}</div>
+            <div style={{ fontSize: 24, fontWeight: 700, color: g.balance > 0 ? T.blue : T.green, marginTop: 2 }} className="tnum">{g.balance > 0 ? fmt(g.balance) : g.pipeN > 0 ? "₹0 RECEIVABLE" : "✓ SAB AAYA"}</div>
+            {g.pipeN > 0 && <div style={{ fontSize: 10, color: T.muted, marginTop: 2, fontWeight: 700 }} className="tnum">+ {fmt(g.pipeBal)} MRN BAAKI ({g.pipeN} ORDER) — MRN HOTE HI RECEIVABLE BANEGA</div>}
             <div style={{ fontSize: 10, color: T.muted, marginTop: 2, fontWeight: 700 }} className="tnum">
               {fmt(g.received)} AAYA OF {fmt(g.value)}{g.overdue > 0 ? <span style={{ color: T.orange }}> · {g.overdue} OVERDUE ({fmt(g.overdueBal)})</span> : null}
             </div>
