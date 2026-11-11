@@ -1165,8 +1165,9 @@ const JAMES_FIELD_FLOWS = {
 // anything touches the real ledger. Each save function below mirrors an existing manual flow
 // exactly (VoiceLogButton, QuickActionsBar's Cashout/Sold Order, DuesTab's add) so the ledger
 // ends up identical either way.
-function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAnim }) {
+function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAnim, openSignal }) {
   const [open, setOpen] = useState(false);
+  useEffect(() => { if (openSignal) setOpen(true); }, [openSignal]);
   const [typedText, setTypedText] = useState("");
   const [chatInput, setChatInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -2081,6 +2082,7 @@ export default function Khata() {
   const [tab, setTab] = useState("overview");
   const [gate, setGate] = useState(null); // null | "login" | "noaccess" | "error" — shown instead of the app
   const [accountOpen, setAccountOpen] = useState(false);
+  const [jamesSignal, setJamesSignal] = useState(0);
   const [scopeMode, setScopeModeRaw] = useState(() => { const m = bizLS.get("money_scope_mode", "all"); return ["all", "personal", "business"].includes(m) ? m : "all"; });
   const setScopeMode = (m) => { setScopeModeRaw(m); bizLS.set("money_scope_mode", m); if (NAV_BY_MODE[m] && !NAV_BY_MODE[m].includes(tab)) setTab("overview"); };
   const [toast, setToast] = useState(null);
@@ -2382,15 +2384,17 @@ export default function Khata() {
         }
       `}</style>
 
-      <TopBar saving={saving} xp={data.xp} streak={data.streak.count} nextCountryGoal={nextTravelGoal(data)} onOpenLockSetup={() => setLockSetupOpen(true)} onOpenAccount={() => setAccountOpen(true)} />
+      <TopBar saving={saving} xp={data.xp} streak={data.streak.count} nextCountryGoal={nextTravelGoal(data)} onOpenLockSetup={() => setLockSetupOpen(true)} onOpenAccount={() => setAccountOpen(true)} mode={scopeMode} />
       <div style={S.body}>
         <ScopeBar mode={scopeMode} setMode={setScopeMode} untagged={untaggedCount} />
-        {tab === "overview" && <MyDay data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} mode={scopeMode} setTab={(t) => { if (!NAV_BY_MODE[scopeMode] || NAV_BY_MODE[scopeMode].includes(t)) setTab(t); else { setScopeMode("all"); setTab(t); } }} />}
+        {tab === "overview" && scopeMode !== "business" && <MyDay data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} mode={scopeMode} setTab={(t) => { if (!NAV_BY_MODE[scopeMode] || NAV_BY_MODE[scopeMode].includes(t)) setTab(t); else { setScopeMode("all"); setTab(t); } }} />}
         {tab === "overview" && <SmartFeed data={data} mode={scopeMode} setTab={(t) => { if (!NAV_BY_MODE[scopeMode] || NAV_BY_MODE[scopeMode].includes(t)) setTab(t); else { setScopeMode("all"); setTab(t); } }} setToast={setToast} />}
-        {tab === "overview" && <OverviewTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
+        {tab === "overview" && scopeMode === "business" && <LuxellaHome data={data} setTab={setTab} openJames={() => setJamesSignal((n) => n + 1)} />}
+        {tab === "overview" && scopeMode !== "business" && <OverviewTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "business" && <BusinessTab data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "sales" && <SalesTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "deal" && <DealTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
+        {tab === "grow" && <GrowTab data={data} persist={persist} setToast={setToast} />}
         {tab === "income" && <IncomeTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "expense" && <ExpenseTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "funds" && <FundsTab data={viewData} persist={scopedPersist} />}
@@ -2408,7 +2412,7 @@ export default function Khata() {
       <FloatingCalcButton onClick={() => setCalcOpen(true)} />
 
       <VoiceLogButton data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />
-      <JamesButton data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />
+      <JamesButton data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} openSignal={jamesSignal} />
       {calcOpen && (
         <CalculatorModal
           onClose={() => setCalcOpen(false)}
@@ -2486,7 +2490,7 @@ function GoalTimeline({ targetDate, remaining, netProfitNeeded, salesNeeded }) {
   );
 }
 
-function TopBar({ saving, xp, streak, nextCountryGoal, onOpenLockSetup, onOpenAccount }) {
+function TopBar({ saving, xp, streak, nextCountryGoal, onOpenLockSetup, onOpenAccount, mode }) {
   const level = Math.floor(xp / 100) + 1;
   const now = useLiveClock();
   const dayName = now.toLocaleDateString("en-IN", { weekday: "long" });
@@ -2496,7 +2500,7 @@ function TopBar({ saving, xp, streak, nextCountryGoal, onOpenLockSetup, onOpenAc
   return (
     <div style={S.topBar}>
       <div>
-        <div style={S.wordmark}>MONEY</div>
+        <div style={{ ...S.wordmark, ...(mode === "business" ? { color: "#C6A664", letterSpacing: "0.12em" } : {}) }}>{mode === "business" ? "LUXELLA" : "MONEY"}</div>
         <div style={S.clockRow} className="tnum">{dateStr} · DAY {dayNum}/7 · {timeStr}</div>
         {nextCountryGoal && (
           <div style={S.nextCountryRow}>
@@ -2519,14 +2523,16 @@ function TopBar({ saving, xp, streak, nextCountryGoal, onOpenLockSetup, onOpenAc
 // which tabs each view gets — PERSONAL and BUSINESS each have their own set, ALL shows everything
 const NAV_BY_MODE = {
   personal: ["overview", "income", "expense", "funds", "goals", "dues", "accounts", "investments", "pool", "analytics"],
-  business: ["overview", "business", "sales", "deal", "expense", "dues", "investments", "analytics", "hustle"],
+  business: ["overview", "sales", "deal", "business", "dues", "investments", "grow"],
 };
+const BIZ_NAV_LABEL = { overview: "Luxella", business: "Books", dues: "Lena-Dena", investments: "Stock" };
 function BottomNav({ tab, setTab, mode }) {
   const allItems = [
     { id: "overview", label: "Home", icon: Home },
     { id: "business", label: "Biz", icon: Briefcase },
     { id: "sales", label: "Sales", icon: Receipt },
     { id: "deal", label: "Deal", icon: Calculator },
+    { id: "grow", label: "Grow", icon: TrendingUp },
     { id: "income", label: "Income", icon: ArrowUpCircle },
     { id: "expense", label: "Expense", icon: ArrowDownCircle },
     { id: "funds", label: "Funds", icon: Wallet },
@@ -2539,7 +2545,7 @@ function BottomNav({ tab, setTab, mode }) {
     { id: "hustle", label: "Hustle", icon: Zap },
   ];
   const allowed = NAV_BY_MODE[mode];
-  const items = (allowed ? allItems.filter((it) => allowed.includes(it.id)) : allItems).map((it) => (mode === "business" && it.id === "investments" ? { ...it, label: "Stock" } : it));
+  const items = (allowed ? allItems.filter((it) => allowed.includes(it.id)) : allItems).map((it) => (mode === "business" && BIZ_NAV_LABEL[it.id] ? { ...it, label: BIZ_NAV_LABEL[it.id] } : it));
   return (
     <div style={S.bottomNav}>
       {items.map((it) => {
@@ -6669,6 +6675,354 @@ function MyDay({ data, persist, registerActivity, setToast, triggerNoteAnim, mod
   );
 }
 
+/* ---------------- Grow: his money engine, the lever that matters most, and a small team of agents ---------------- */
+
+// The real engine numbers, straight from the books.
+function engineStats(data, today) {
+  const from = dAgoISO(today, 89);
+  const withCost = (data.sales || []).filter((x) => x.cost > 0 && x.date >= from);
+  const cost = withCost.reduce((a, x) => a + x.cost, 0);
+  const margin = cost > 0 ? (withCost.reduce((a, x) => a + (x.saleValue - x.cost), 0) / cost) * 100 : null;
+  const paid = (data.sales || []).filter((x) => saleBalance(x) <= 0 && (x.payments || []).length);
+  const payDays = paid.length ? paid.reduce((a, x) => a + Math.max(0, dayDiff(x.date, x.payments[x.payments.length - 1].date)), 0) / paid.length : null;
+  const inv = data.investments || [];
+  const stock = inv.filter((i) => i.investmentType === "Inventory Stock" && (i.status === "in_stock" || String(i.status || "").startsWith("pending_landing"))).reduce((a, i) => a + (i.amount || 0), 0);
+  const so = salesOutstanding(data, today);
+  const recv = (data.receivables || []).filter((r) => r.purpose === "business" && r.status === "pending").reduce((a, r) => a + r.amount, 0);
+  const pay = (data.payables || []).filter((r) => r.purpose === "business" && r.status === "pending").reduce((a, r) => a + r.amount, 0);
+  const capital = Math.max(0, stock + so.total + recv - pay);
+  return { margin, marginN: withCost.length, payDays, payN: paid.length, capital };
+}
+
+// Capital turned over again and again: each cycle earns margin on what is deployed, part is reinvested.
+function simulateGrowth({ capital, marginPct, cycleDays, reinvestPct, target }) {
+  const m = marginPct / 100, keep = reinvestPct / 100;
+  if (!(capital > 0) || !(m > 0) || !(cycleDays > 0)) return null;
+  let c = capital, days = 0, hit = null;
+  const marks = {};
+  const maxDays = 365 * 60;
+  while (days < maxDays) {
+    if (!hit && target && c >= target) hit = days;
+    [365, 730, 1095].forEach((d) => { if (!marks[d] && days >= d) marks[d] = c; });
+    if (hit !== null && marks[1095]) break;
+    if (keep <= 0 && days >= 1095) break;
+    c += c * m * keep;
+    days += cycleDays;
+  }
+  const perCycle = capital * m;
+  return { perCycle, perMonth: (perCycle * 30) / cycleDays, monthlyReturnPct: (m * 30 * 100) / cycleDays, hitDays: hit, marks };
+}
+const spanText = (days) => (days === null ? "60 saal me bhi nahi" : days < 45 ? `${Math.max(1, Math.round(days))} din` : days < 730 ? `${(days / 30).toFixed(1)} mahine` : `${(days / 365).toFixed(1)} saal`);
+
+const AGENTS = [
+  { id: "cfo", name: "CFO", line: "is mahine ka poora hisaab: kahan kama rahe ho, kahan paisa beh raha hai", ask: "Give a CFO review of this month: where the profit really comes from, where money is leaking or stuck, and the 3 most valuable actions for this week." },
+  { id: "growth", name: "GROWTH", line: "capital, margin aur speed — aage badhne ke 3 sabse bade moves", ask: "Act as a growth strategist for this reselling business. Using capital deployed, margin, how fast money comes back, and concentration on buyers, name the 3 highest-leverage moves to grow profit, each with the number it would move." },
+  { id: "pricing", name: "PRICING", line: "kaun sa buyer / type achha margin deta hai, kahan sasta bech rahe ho", ask: "Review pricing and margins by buyer and by sale type. Which buyers and types are worth more of his capital, which are below his minimum margin, and what should he change." },
+  { id: "spend", name: "SPEND COACH", line: "personal kharcha aur waste — goals par kya asar pad raha hai", ask: "Review his personal spending and waste. Show what it is costing his goals in concrete terms and give 2-3 specific, realistic changes." },
+];
+
+function GrowTab({ data, persist, setToast }) {
+  const today = todayISO();
+  const st = useMemo(() => engineStats(data, today), [data, today]);
+  const cfg = bizSettings(data);
+  const saved = data.growPlan || {};
+  const [f, setF] = useState({
+    capital: String(saved.capital ?? (st.capital > 0 ? Math.round(st.capital) : "")),
+    marginPct: String(saved.marginPct ?? (st.margin !== null ? st.margin.toFixed(1) : cfg.minMargin)),
+    cycleDays: String(saved.cycleDays ?? (st.payDays !== null ? Math.max(1, Math.round(st.payDays)) : "")),
+    reinvestPct: String(saved.reinvestPct ?? 50),
+  });
+  const [target, setTarget] = useState(saved.target ?? 10000000);
+  const [busy, setBusy] = useState(null);
+  const [answers, setAnswers] = useState(() => { try { return JSON.parse(localStorage.getItem(`agents_${today}`) || "{}"); } catch { return {}; } });
+  const [err, setErr] = useState(null);
+
+  const inputs = { capital: parseFloat(f.capital) || 0, marginPct: parseFloat(f.marginPct) || 0, cycleDays: parseFloat(f.cycleDays) || 0, reinvestPct: Math.max(0, Math.min(100, parseFloat(f.reinvestPct) || 0)), target };
+  const sim = simulateGrowth(inputs);
+  // which single change gets him to the target soonest
+  const levers = sim ? [
+    { k: "Paisa 5 din jaldi ghoomao", v: simulateGrowth({ ...inputs, cycleDays: Math.max(1, inputs.cycleDays - 5) }) },
+    { k: "Margin 5% badhao", v: simulateGrowth({ ...inputs, marginPct: inputs.marginPct + 5 }) },
+    { k: "20% aur wapas lagao (reinvest)", v: simulateGrowth({ ...inputs, reinvestPct: Math.min(100, inputs.reinvestPct + 20) }) },
+    { k: "Capital dugna karo", v: simulateGrowth({ ...inputs, capital: inputs.capital * 2 }) },
+  ].map((l) => ({ ...l, saved: sim.hitDays !== null && l.v && l.v.hitDays !== null ? sim.hitDays - l.v.hitDays : null, extra: l.v ? l.v.perMonth - sim.perMonth : 0 })).sort((a, b) => (b.saved ?? -1) - (a.saved ?? -1)) : [];
+
+  const savePlan = () => { persist({ ...data, growPlan: { ...inputs } }); setToast("PLAN SAVED"); setTimeout(() => setToast(null), 1200); };
+
+  const runAgent = async (ag) => {
+    if (busy) return;
+    setBusy(ag.id); setErr(null);
+    try {
+      const mk = monthKey(today);
+      const s1 = buildStatement(data, mk), s0 = buildStatement(data, shiftMonthKey(mk, -1));
+      const so = salesOutstanding(data, today);
+      const byParty = {};
+      (data.sales || []).forEach((x) => { const p = (byParty[x.party] = byParty[x.party] || { type: x.channel, n: 0, value: 0, cost: 0, costN: 0, due: 0 }); p.n += 1; p.value += x.saleValue; if (x.cost > 0) { p.cost += x.cost; p.costN += 1; p.profit = (p.profit || 0) + (x.saleValue - x.cost); } p.due += saleBalance(x); });
+      const pk = (k) => data.expenses.filter((e) => monthKey(e.date) === k && entryClass(e, "expense") === "personal");
+      const cat = {}; pk(mk).forEach((e) => { cat[e.category] = (cat[e.category] || 0) + e.amount; });
+      const pack = `TODAY ${today}
+THIS MONTH (cash basis): revenue ₹${s1.revenue} [${s1.rev.map(([k, v]) => `${k} ₹${v}`).join(", ") || "none"}], goods ₹${s1.goods}, shipping ₹${s1.shipping}, other ₹${s1.other}, net profit ₹${s1.net}
+LAST MONTH: revenue ₹${s0.revenue}, net profit ₹${s0.net}
+TARGETS: monthly ₹${data.profitTargets?.monthly || 0}
+ENGINE: capital in business ₹${Math.round(st.capital)}; average margin on cost ${st.margin !== null ? st.margin.toFixed(1) + "% over " + st.marginN + " sales with a cost" : "unknown (no sale has a cost yet)"}; average days to get fully paid ${st.payDays !== null ? st.payDays.toFixed(0) + " over " + st.payN + " paid sales" : "unknown"}
+HIS RULES: minimum margin ${cfg.minMargin}% on landed cost, good ${cfg.goodMargin}%; own rate ₹${cfg.fx}/$
+RECEIVABLES: ₹${so.total} open across ${so.open.length} sales, ₹${so.overdueTotal} overdue
+BUYERS: ${Object.entries(byParty).map(([k, v]) => `${k} [${v.type}] ${v.n} sales ₹${v.value}${v.costN ? `, margin ${((v.profit / v.cost) * 100).toFixed(1)}% on ${v.costN}` : ", cost unknown"}, ₹${v.due} still due`).join("; ") || "no sales recorded yet"}
+SALES MISSING A COST: ${(data.sales || []).filter((x) => !(x.cost > 0) && !x.costLogged).length}
+PERSONAL THIS MONTH: ₹${pk(mk).reduce((a, e) => a + e.amount, 0)} [${Object.entries(cat).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k} ₹${v}`).join(", ") || "none"}]; last month ₹${pk(shiftMonthKey(mk, -1)).reduce((a, e) => a + e.amount, 0)}; waste this month ₹${data.expenses.filter((e) => monthKey(e.date) === mk && e.unnecessary).reduce((a, e) => a + e.amount, 0)}
+GOALS: ${goalPlans(data, today).map((p2) => `${p2.g.name} needs ₹${p2.left} more in a fund that gets ${p2.pct}% of what he nets (= ₹${p2.profitNeeded ?? "?"} more net profit)`).join("; ") || "none"}
+NORTH STAR: ${data.northStar || "not set"}
+ALERTS: ${buildInsights(data, today).slice(0, 10).map((x) => x.text).join(" | ") || "none"}
+WHAT HE HAS TAUGHT THE APP: ${(data.businessMemory || "").trim() || "nothing yet"}`;
+      const prompt = `You are the ${ag.name} agent for Jeet, a solo founder who sources luxury goods abroad and resells in India (B2B to KicksMachine/Sourcex, plus clients and resellers). ${ag.ask}
+
+RULES — these matter more than sounding smart:
+- Use ONLY the numbers below. Every point must cite a figure from them. If the data needed for a point is missing, say exactly what is missing and what he should record — do not fill the gap with generic advice or invented numbers.
+- No motivational talk, no generic business tips. Specific to these numbers or leave it out.
+- If there is too little data to judge, say so plainly in the first line and list the 2-3 things to record first.
+- Max 6 short bullets. Plain Hinglish like he writes. Amounts as ₹ with Indian commas. No markdown headings, no bold.
+
+DATA:
+${pack}`;
+      const text = (await fetchAIText(prompt)).trim();
+      const next = { ...answers, [ag.id]: text };
+      setAnswers(next);
+      try { localStorage.setItem(`agents_${today}`, JSON.stringify(next)); } catch { /* ignore */ }
+    } catch (e) {
+      setErr(/429|rate|quota|too many/i.test(String(e && e.message)) ? "AI abhi busy hai (roz ki limit). Thodi der me dobara dabao." : "Agent ko jawab nahi mila — dobara dabao.");
+    } finally { setBusy(null); }
+  };
+
+  const inp = { ...S.input, width: "100%" };
+  const lab = { fontSize: 9.5, color: T.muted, fontWeight: 700, letterSpacing: "0.05em", marginBottom: 4 };
+  const cell = (label, node) => <div style={{ flex: 1, minWidth: 0 }}><div style={lab}>{label}</div>{node}</div>;
+  const line = (label, value, o = {}) => (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: o.big ? 13.5 : 12, fontWeight: o.big ? 700 : 600, color: o.color || (o.sub ? T.muted : T.ivory), padding: "3px 0" }}>
+      <span>{label}</span><span className="tnum" style={{ textAlign: "right", flexShrink: 0 }}>{value}</span>
+    </div>
+  );
+  const TARGETS = [[1000000, "₹10 LAKH"], [10000000, "₹1 CR"], [100000000, "₹10 CR"], [1000000000, "₹100 CR"]];
+
+  return (
+    <div>
+      <SectionLabel text="TUMHARA ENGINE (ASLI NUMBERS)" />
+      <div style={S.formCard}>
+        {line("Business me laga paisa", fmt(Math.round(st.capital)), { big: true, color: T.blue })}
+        {line("Average margin (cost par)", st.margin !== null ? `${st.margin.toFixed(1)}% · ${st.marginN} sale` : "pata nahi — sales me cost daalo")}
+        {line("Paisa wapas aane me (sale → poora payment)", st.payDays !== null ? `${st.payDays.toFixed(0)} din · ${st.payN} sale` : "pata nahi — abhi koi sale poori paid nahi")}
+        <div style={{ fontSize: 10, color: T.muted, fontWeight: 600, lineHeight: 1.5 }}>Paisa teen cheezon se badhta hai: kitna laga hai × har chakkar me kitna margin × chakkar kitni jaldi poora hota hai. Neeche isi se hisaab hai.</div>
+      </div>
+
+      <SectionLabel text="AGAR YE NUMBERS BANE RAHE TO" />
+      <div style={S.formCard}>
+        <div style={{ display: "flex", gap: 8 }}>
+          {cell("CAPITAL ₹", <AmountInput value={f.capital} onChange={(v) => setF({ ...f, capital: v })} placeholder="0" style={inp} className="tnum" />)}
+          {cell("MARGIN %", <AmountInput value={f.marginPct} onChange={(v) => setF({ ...f, marginPct: v })} style={inp} className="tnum" />)}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {cell("EK CHAKKAR KITNE DIN", <AmountInput value={f.cycleDays} onChange={(v) => setF({ ...f, cycleDays: v })} placeholder="order se payment tak" style={inp} className="tnum" />)}
+          {cell("PROFIT KA KITNA % WAPAS LAGAOGE", <AmountInput value={f.reinvestPct} onChange={(v) => setF({ ...f, reinvestPct: v })} style={inp} className="tnum" />)}
+        </div>
+        {!sim && <div style={{ fontSize: 11, color: T.gold, fontWeight: 700 }}>Capital, margin aur chakkar ke din — teeno daalo.</div>}
+        {sim && (
+          <>
+            {line("Har chakkar ka profit", fmt(Math.round(sim.perCycle)))}
+            {line("Mahine ka profit (abhi ke capital par)", fmt(Math.round(sim.perMonth)), { big: true, color: T.green })}
+            {line("Capital par mahine ka return", `${sim.monthlyReturnPct.toFixed(1)}%`)}
+            {line(`Jeb me jaata hai (${100 - inputs.reinvestPct}%)`, `${fmt(Math.round((sim.perMonth * (100 - inputs.reinvestPct)) / 100))} / mahina`, { sub: true })}
+            <div style={{ borderTop: `1px solid ${T.line}`, margin: "4px 0" }} />
+            {[[365, "1 saal baad capital"], [730, "2 saal baad"], [1095, "3 saal baad"]].map(([d, l]) => sim.marks[d] ? line(l, fmt(Math.round(sim.marks[d]))) : null)}
+            <div>
+              <div style={lab}>TARGET (CAPITAL)</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {TARGETS.map(([v, l]) => <button key={v} onClick={() => setTarget(v)} style={{ background: target === v ? T.gold : T.bg, color: target === v ? T.bg : T.ivory, border: `1px solid ${target === v ? T.gold : T.line}`, borderRadius: T.radiusPill, padding: "6px 11px", fontSize: 10.5, fontWeight: 700 }}>{l}</button>)}
+              </div>
+            </div>
+            {line(`${fmt(target)} tak pahunchne me`, inputs.capital >= target ? "✓ pahunch gaye" : spanText(sim.hitDays), { big: true, color: T.gold })}
+            <button style={S.correctionLink} onClick={savePlan}>YE NUMBERS YAAD RAKHO</button>
+          </>
+        )}
+      </div>
+
+      {sim && levers.length > 0 && (
+        <>
+          <SectionLabel text="KAUNSA LEVER SABSE ZYADA FARAK DAALTA HAI" />
+          <div style={S.formCard}>
+            {levers.map((l, i) => (
+              <div key={l.k} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12, fontWeight: 600, padding: "3px 0" }}>
+                <span style={{ color: i === 0 && l.saved > 0 ? T.green : T.ivory }}>{i === 0 && l.saved > 0 ? "★ " : ""}{l.k}</span>
+                <span className="tnum" style={{ textAlign: "right", color: T.muted, flexShrink: 0 }}>
+                  {l.extra > 0 ? `+${fmt(Math.round(l.extra))}/mahina` : "abhi wahi"}{l.saved !== null && l.saved > 0 ? ` · target ${spanText(l.saved)} pehle` : ""}
+                </span>
+              </div>
+            ))}
+            <div style={{ fontSize: 10, color: T.muted, fontWeight: 600, lineHeight: 1.5 }}>Ye sirf hisaab hai, vaada nahi. Capital badhne par itna maal, itne buyers aur wahi margin milte rahenge — ye maan kar chala hai, jo asli me hamesha nahi hota.</div>
+          </div>
+        </>
+      )}
+
+      <SectionLabel text="TUMHARI TEAM (AI AGENTS)" />
+      <div style={{ fontSize: 10, color: T.muted, fontWeight: 600, marginBottom: 8, lineHeight: 1.5 }}>Har agent sirf tumhare app ke numbers padhta hai. Jawab aaj ke liye save rehta hai — AI ki roz ki limit hai, isliye zaroorat ho tabhi dabao.</div>
+      {err && <div style={{ fontSize: 11, color: T.orange, fontWeight: 700, marginBottom: 8 }}>{err}</div>}
+      {AGENTS.map((ag) => (
+        <div key={ag.id} style={{ ...S.formCard, marginTop: 8, gap: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 700 }}>{ag.name}</div>
+              <div style={{ fontSize: 10.5, color: T.muted, fontWeight: 600, lineHeight: 1.4 }}>{ag.line}</div>
+            </div>
+            <button style={{ ...S.submitBtnPurple, padding: "9px 14px", flexShrink: 0, opacity: busy && busy !== ag.id ? 0.4 : 1 }} className="npop" onClick={() => runAgent(ag)} disabled={!!busy}>{busy === ag.id ? "SOCH RAHA…" : answers[ag.id] ? "DOBARA" : "POOCHO"}</button>
+          </div>
+          {answers[ag.id] && <div style={{ fontSize: 12, lineHeight: 1.6, whiteSpace: "pre-wrap", borderTop: `1px solid ${T.line}`, paddingTop: 8 }}>{answers[ag.id]}</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ---------------- Luxella Home: the business view's own dashboard ---------------- */
+
+function LuxellaHome({ data, setTab, openJames }) {
+  const today = todayISO();
+  const mk = monthKey(today);
+  const st = useMemo(() => buildStatement(data, mk), [data, mk]);
+  const so = useMemo(() => salesOutstanding(data, today), [data, today]);
+  const sumDay = (arr, kind) => arr.filter((e) => e.date === today && entryClass(e, kind) === "business").reduce((a, e) => a + e.amount, 0);
+  const todayIn = sumDay(data.income, "income"), todayOut = sumDay(data.expenses, "expense");
+  const target = data.profitTargets?.monthly || 0;
+  const inv = data.investments || [];
+  const stock = inv.filter((i) => i.investmentType === "Inventory Stock" && i.status === "in_stock");
+  const transit = inv.filter((i) => String(i.status || "").startsWith("pending_landing"));
+  const bizRecv = (data.receivables || []).filter((r) => r.purpose === "business" && r.status === "pending");
+  const bizPay = (data.payables || []).filter((r) => r.purpose === "business" && r.status === "pending");
+  const toReceive = so.total + bizRecv.reduce((a, r) => a + r.amount, 0);
+  const toPay = bizPay.reduce((a, r) => a + r.amount, 0);
+  const noCost = (data.sales || []).filter((x) => !(x.cost > 0) && !x.costLogged && saleReceived(x) > 0);
+
+  // who owes what, biggest first
+  const owing = useMemo(() => {
+    const m = {};
+    so.open.forEach((x) => { const p = (m[x.party] = m[x.party] || { party: x.party, type: x.channel, bal: 0, n: 0, late: 0, lateDays: 0 }); p.bal += saleBalance(x); p.n += 1; if (saleStatus(x, today) === "overdue") { p.late += saleBalance(x); p.lateDays = Math.max(p.lateDays, dayDiff(x.dueDate, today)); } });
+    return Object.values(m).sort((a, b) => b.late - a.late || b.bal - a.bal).slice(0, 6);
+  }, [so, today]);
+
+  // this month by buyer type
+  const byType = useMemo(() => SALE_TYPES.map((t) => {
+    const arr = (data.sales || []).filter((x) => x.channel === t);
+    const sold = arr.filter((x) => monthKey(x.date) === mk);
+    const withCost = sold.filter((x) => x.cost > 0);
+    return {
+      t, n: sold.length, sold: sold.reduce((a, x) => a + x.saleValue, 0),
+      got: arr.reduce((a, x) => a + (x.payments || []).filter((p) => monthKey(p.date) === mk).reduce((b, p) => b + p.amount, 0), 0),
+      due: arr.reduce((a, x) => a + saleBalance(x), 0),
+      margin: withCost.length ? (withCost.reduce((a, x) => a + (x.saleValue - x.cost), 0) / withCost.reduce((a, x) => a + x.cost, 0)) * 100 : null,
+    };
+  }).filter((x) => x.n > 0 || x.due > 0 || x.got > 0), [data.sales, mk]);
+
+  const recent = useMemo(() => [
+    ...data.income.filter((e) => entryClass(e, "income") === "business").map((e) => ({ ...e, _k: "in", _l: e.source })),
+    ...data.expenses.filter((e) => entryClass(e, "expense") === "business").map((e) => ({ ...e, _k: "out", _l: e.category })),
+  ].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).slice(0, 6), [data.income, data.expenses]);
+
+  const kpi = (label, value, color, sub, tab) => (
+    <button onClick={() => tab && setTab(tab)} style={{ ...S.statBox, textAlign: "left", cursor: tab ? "pointer" : "default" }}>
+      <div style={S.statBoxLabel}>{label}</div>
+      <div style={{ ...S.statBoxNum, fontSize: 19, color }} className="tnum">{value}</div>
+      {sub && <div style={{ fontSize: 9.5, color: T.muted, fontWeight: 700, marginTop: 4 }}>{sub}</div>}
+    </button>
+  );
+  const act = (label, color, onClick) => (
+    <button onClick={onClick} className="npop" style={{ flex: "1 1 30%", background: "none", color, border: `1px solid ${color}`, borderRadius: T.radiusMd, padding: "13px 6px", fontSize: 11.5, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif", letterSpacing: "0.03em" }}>{label}</button>
+  );
+
+  return (
+    <div>
+      <div style={{ ...S.heroCard, marginTop: 0 }}>
+        <div style={S.heroLabel}>LUXELLA · IS MAHINE KA PROFIT</div>
+        <div style={{ ...S.heroNum, color: st.net >= 0 ? T.green : T.orange }} className="tnum">{fmtSigned(st.net)}</div>
+        <div style={S.heroSub} className="tnum">{fmt(st.revenue)} aaya · {fmt(st.totalCost)} kharcha · aaj {fmtSigned(todayIn - todayOut)}</div>
+        {target > 0 && (
+          <>
+            <div style={{ height: 6, borderRadius: 3, background: T.bg, overflow: "hidden", marginTop: 12 }}>
+              <div style={{ width: `${Math.max(0, Math.min(100, (st.net / target) * 100))}%`, height: "100%", background: st.net >= target ? T.green : T.gold, borderRadius: 3 }} />
+            </div>
+            <div style={{ fontSize: 10, color: T.muted, fontWeight: 700, marginTop: 6 }} className="tnum">{Math.max(0, Math.round((st.net / target) * 100))}% OF {fmt(target)} TARGET</div>
+          </>
+        )}
+        {noCost.length > 0 && <div onClick={() => setTab("sales")} style={{ fontSize: 10.5, color: T.gold, fontWeight: 700, marginTop: 10, lineHeight: 1.4 }}>⚠ {noCost.length} sale ka cost nahi daala — isme {fmt(noCost.reduce((a, x) => a + saleReceived(x), 0))} poora profit gin raha hai. Cost daalo →</div>}
+      </div>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
+        {act("+ NEW SALE", T.green, () => setTab("sales"))}
+        {act("PAISA AAYA", T.blue, () => setTab("sales"))}
+        {act("DEAL CHECK", T.gold, () => setTab("deal"))}
+        {act("+ KHARCHA", T.orange, () => setTab("business"))}
+        {act("LENA-DENA", T.purple, () => setTab("dues"))}
+        {act("⚡ JAMES", T.ivory, openJames)}
+      </div>
+
+      <div style={{ ...S.statGrid, marginTop: 12 }}>
+        {kpi(`LENA HAI · ${so.open.length + bizRecv.length}`, fmt(toReceive), T.blue, so.overdueTotal > 0 ? <span style={{ color: T.orange }}>{fmt(so.overdueTotal)} LATE</span> : "sab time par", "sales")}
+        {kpi(`DENA HAI · ${bizPay.length}`, fmt(toPay), T.gold, bizPay.length ? [...new Set(bizPay.map((r) => r.party))].slice(0, 2).join(", ") : "kuch nahi", "dues")}
+        {kpi(`MAAL RAASTE ME · ${transit.length}`, fmt(transit.reduce((a, i) => a + (i.amount || 0), 0)), T.ivory, transit.length ? "order diya, aaya nahi" : "kuch nahi", "investments")}
+        {kpi(`STOCK HAATH ME · ${stock.length}`, fmt(stock.reduce((a, i) => a + (i.amount || 0), 0)), T.ivory, stock.length ? "bechna baaki" : "kuch nahi", "investments")}
+      </div>
+
+      {owing.length > 0 && (
+        <>
+          <SectionLabel text="KAUN KITNA DEGA" />
+          <div style={S.formCard} onClick={() => setTab("sales")}>
+            {owing.map((p) => (
+              <div key={p.party} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 700 }}>{p.party} <span style={{ ...S.fineTag, color: SALE_TYPE_COLOR[p.type] || T.muted, borderColor: `${SALE_TYPE_COLOR[p.type] || T.muted}66` }}>{(p.type || "").toUpperCase()}</span></div>
+                  <div style={{ fontSize: 10, color: p.late > 0 ? T.orange : T.muted, fontWeight: 700 }} className="tnum">{p.n} entr{p.n === 1 ? "y" : "ies"}{p.late > 0 ? ` · ${fmt(p.late)} late, ${p.lateDays} din` : " · time par"}</div>
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: p.late > 0 ? T.orange : T.blue }} className="tnum">{fmt(p.bal)}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {byType.length > 0 && (
+        <>
+          <SectionLabel text="IS MAHINE — TYPE KE HISAAB SE" />
+          <div style={S.formCard}>
+            {byType.map((x) => (
+              <div key={x.t} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                <div>
+                  <div style={{ fontSize: 12.5, fontWeight: 700, color: SALE_TYPE_COLOR[x.t] }}>{x.t.toUpperCase()}</div>
+                  <div style={{ fontSize: 10, color: T.muted, fontWeight: 700 }} className="tnum">{x.n} sale · {fmt(x.sold)} becha{x.margin !== null ? ` · margin ${x.margin.toFixed(0)}%` : ""}</div>
+                </div>
+                <div style={{ textAlign: "right" }} className="tnum">
+                  <div style={{ fontSize: 12.5, fontWeight: 700, color: T.green }}>+{fmt(x.got)}</div>
+                  <div style={{ fontSize: 10, color: T.muted, fontWeight: 700 }}>{x.due > 0 ? `${fmt(x.due)} baaki` : "sab aaya"}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      <SectionLabel text="ABHI KI ENTRIES" />
+      <div style={S.ledger}>
+        {recent.length === 0 && <EmptyNote text="abhi koi business entry nahi — + NEW SALE ya ⚡ JAMES se shuru karo" />}
+        {recent.map((e) => (
+          <div key={`${e._k}${e.id}`} style={S.ledgerRow}>
+            <div style={S.ledgerDate}>{fmtDateShort(e.date)}</div>
+            <div style={S.ledgerMain}>
+              <div style={S.ledgerCategory}>{e._l}{(e.auto || e.lxOrder) && <span style={{ ...S.fineTag, marginLeft: 6, color: T.blue, borderColor: `${T.blue}66` }}>AUTO</span>}</div>
+              {e.note && <div style={S.ledgerNote}>{e.note}</div>}
+            </div>
+            <div style={{ ...S.ledgerAmt, color: e._k === "in" ? T.green : T.orange }} className="tnum">{e._k === "in" ? "+" : "−"}{fmt(e.amount)}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- Expense ---------------- */
 
 function FixedExpensesSection({ data, persist, registerActivity, setToast, triggerNoteAnim }) {
@@ -9900,8 +10254,8 @@ const S = {
   headerStats: { display: "flex", gap: 8 },
   statChip: { display: "flex", alignItems: "center", gap: 5, background: T.surfaceHi, border: `1px solid ${T.line}`, borderRadius: T.radiusPill, boxShadow: T.shadowSm, padding: "6px 12px", fontSize: 11, fontWeight: 700, color: T.ivory },
 
-  bottomNav: { position: "fixed", bottom: 0, left: 0, right: 0, background: "rgba(20,20,25,0.85)", backdropFilter: "blur(20px) saturate(150%)", WebkitBackdropFilter: "blur(20px) saturate(150%)", borderTop: `1px solid ${T.line}`, boxShadow: "0 -8px 32px rgba(0,0,0,0.35)", display: "flex", justifyContent: "space-around", padding: "10px 4px calc(env(safe-area-inset-bottom, 4px) + 10px) 4px", zIndex: 20 },
-  navBtn: { background: "none", border: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, flex: 1, padding: "2px 0" },
+  bottomNav: { position: "fixed", bottom: 0, left: 0, right: 0, background: "rgba(20,20,25,0.85)", backdropFilter: "blur(20px) saturate(150%)", WebkitBackdropFilter: "blur(20px) saturate(150%)", borderTop: `1px solid ${T.line}`, boxShadow: "0 -8px 32px rgba(0,0,0,0.35)", display: "flex", justifyContent: "space-around", padding: "10px 4px calc(env(safe-area-inset-bottom, 4px) + 10px) 4px", zIndex: 20 , overflowX: "auto", scrollbarWidth: "none" },
+  navBtn: { background: "none", border: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, flex: "1 0 auto", minWidth: 42, padding: "2px 3px" },
   navIconWrap: { width: 30, height: 30, borderRadius: T.radiusMd, display: "flex", alignItems: "center", justifyContent: "center", transition: "background 0.15s ease, box-shadow 0.15s ease" },
   navLabel: { fontSize: 8.5, fontWeight: 700, letterSpacing: "0" },
 

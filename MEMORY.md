@@ -301,3 +301,21 @@ entries he repeats (`learnedShortcuts`), each goal's plan from `goalPlans` (fund
 net profit it needs given the fund's %, ETA at the last-30-day pace and at the monthly target) and
 patterns from his history (`myPatterns`). James gets an "ABOUT HIM" block with the same goals and his
 business rules.
+
+## The business view is Luxella
+
+In BUSINESS mode the app is a different product from the personal one: the top bar says LUXELLA, the tab
+set is `["overview", "sales", "deal", "business", "dues", "investments", "grow"]` (shown as Luxella /
+Sales / Deal / Books / Lena-Dena / Stock / Grow), and Home renders `LuxellaHome` (month profit vs target,
+business quick actions, to receive / to pay / in transit / stock, who owes what, this month by buyer
+type, recent entries) instead of the personal `OverviewTab` and `MyDay`. Generic personal tabs
+(Income, Expense, Funds, Goals, Accounts, Pool, Stats, Hustle) are not in the business view.
+
+## Grow tab
+
+`engineStats` (capital in business, average margin on cost, average days to get paid) feeds a simulator
+(`simulateGrowth`: capital × margin per cycle, cycle days, % reinvested → monthly profit, capital after
+1/2/3 years, time to a chosen target) and a lever ranking (5 days faster, +5% margin, +20% reinvest,
+double capital). It is arithmetic on his inputs, labelled as not a promise. Four AI agents (`AGENTS`:
+CFO, Growth, Pricing, Spend coach) each make one grounded call over a data pack built from the books;
+answers are cached per day in localStorage because of the AI quota.
