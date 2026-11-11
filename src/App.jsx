@@ -1070,7 +1070,7 @@ function VoiceLogButton({ data, persist, registerActivity, setToast, triggerNote
 
   return (
     <>
-      <button style={S.voiceFab} onClick={() => setOpen(true)}>
+      <button style={S.voiceFab} className="fab-item" aria-label="Voice se entry" onClick={() => setOpen(true)}>
         <Mic size={20} color={T.bg} />
       </button>
       {open && (
@@ -1667,7 +1667,7 @@ Return ONLY JSON, no other text:
 
   return (
     <>
-      <button style={S.smartOrderFab} onClick={() => setOpen(true)}>
+      <button style={S.smartOrderFab} className="fab-item" aria-label="James" onClick={() => setOpen(true)}>
         <Zap size={20} color={T.bg} />
       </button>
       {open && (
@@ -1788,9 +1788,26 @@ Return ONLY JSON, no other text:
   );
 }
 
+// one small button that opens the three quick tools (calculator, voice, James) — they no longer sit on top of the content
+function FabToggle() {
+  const [open, setOpen] = useState(false);
+  useEffect(() => { document.body.classList.toggle("fab-open", open); return () => document.body.classList.remove("fab-open"); }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e) => { if (!e.target.closest || !e.target.closest(".fab-toggle")) setOpen(false); };
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [open]);
+  return (
+    <button className="fab-toggle" aria-label={open ? "band karo" : "quick tools"} onClick={() => setOpen(!open)} style={{ position: "fixed", right: 14, bottom: 88, width: 40, height: 40, borderRadius: "50%", background: open ? T.surfaceHi : T.green, border: open ? `1px solid ${T.lineStrong}` : "none", boxShadow: open ? "none" : glow(T.green, 0.3), display: "flex", alignItems: "center", justifyContent: "center", zIndex: 151, transition: "transform 0.16s ease", transform: open ? "rotate(45deg)" : "none" }}>
+      <Plus size={18} color={open ? T.ivory : T.bg} />
+    </button>
+  );
+}
+
 function FloatingCalcButton({ onClick }) {
   return (
-    <button style={S.fabBtn} className="npop" onClick={onClick}>
+    <button style={S.fabBtn} className="fab-item" aria-label="Calculator" onClick={onClick}>
       <Calculator size={20} color={T.bg} />
     </button>
   );
@@ -2420,6 +2437,8 @@ export default function Khata() {
           transform: scale(0.97);
           opacity: 0.8;
         }
+        .fab-item { opacity: 0; pointer-events: none; transform: translateY(18px) scale(0.6); transition: opacity 0.16s ease, transform 0.16s ease !important; }
+        body.fab-open .fab-item { opacity: 1; pointer-events: auto; transform: none; }
 
         @keyframes noteFlyIn {
           0% { transform: translateY(140px) scale(0.6) rotate(-10deg); opacity: 0; }
@@ -2470,6 +2489,7 @@ export default function Khata() {
 
       <BottomNav tab={tab} setTab={setTab} mode={scopeMode} />
       <NoteFlyOverlay anim={noteAnim} onDone={() => setNoteAnim(null)} />
+      <FabToggle />
       <FloatingCalcButton onClick={() => setCalcOpen(true)} />
 
       <VoiceLogButton data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />
@@ -10648,19 +10668,19 @@ const S = {
   exportBtn: { display: "flex", alignItems: "center", gap: 8, background: T.surfaceHi, border: `1px solid ${T.line}`, borderRadius: T.radiusMd, boxShadow: T.shadowSm, padding: "13px 15px", fontSize: 11.5, fontWeight: 700, color: T.ivory, letterSpacing: "0.02em", fontFamily: "'Space Grotesk', sans-serif" },
 
   fabBtn: {
-    position: "fixed", right: 16, bottom: 92, width: 56, height: 56,
+    position: "fixed", right: 10, bottom: 138, width: 48, height: 48,
     background: T.green, border: "none", borderRadius: "50%", boxShadow: glow(T.green, 0.4),
     display: "flex", alignItems: "center", justifyContent: "center", zIndex: 150,
     transition: "transform 0.15s ease",
   },
   voiceFab: {
-    position: "fixed", right: 16, bottom: 158, width: 56, height: 56,
+    position: "fixed", right: 10, bottom: 194, width: 48, height: 48,
     background: T.purple, border: "none", borderRadius: "50%", boxShadow: glow(T.purple, 0.4),
     display: "flex", alignItems: "center", justifyContent: "center", zIndex: 150,
     transition: "transform 0.15s ease",
   },
   smartOrderFab: {
-    position: "fixed", right: 16, bottom: 224, width: 56, height: 56,
+    position: "fixed", right: 10, bottom: 250, width: 48, height: 48,
     background: T.gold, border: "none", borderRadius: "50%", boxShadow: glow(T.gold, 0.4),
     display: "flex", alignItems: "center", justifyContent: "center", zIndex: 150,
     transition: "transform 0.15s ease",
