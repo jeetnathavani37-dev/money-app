@@ -5620,6 +5620,13 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
   const [view, setView] = useState(() => bizLS.get("sales_view", "party")); // party | list
   const [openParty, setOpenParty] = useState(null);
   const [alloc, setAlloc] = useState(null); // party name
+  const [q, setQ] = useState("");
+  const [whenFilter, setWhenFilter] = useState(null); // null | late | week | next | later | nodate
+  const [lowOnly, setLowOnly] = useState(false);
+  const minMargin = bizSettings(data).minMargin;
+  const isLow = (x) => x.cost > 0 && ((x.saleValue - x.cost) / x.cost) * 100 < minMargin;
+  // when is each open rupee expected: by its due date
+  const whenOf = (x) => { if (!x.dueDate) return "nodate"; const d = dayDiff(today, x.dueDate); return d < 0 ? "late" : d <= 7 ? "week" : d <= 14 ? "next" : "later"; };
 
   const sales = data.sales || [];
   // what we already know about a buyer, to fill the type and show how they have paid before
@@ -5653,19 +5660,28 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
     return b;
   }, [out, today]);
   const agingMax = Math.max(1, ...aging.map((x) => x.v));
+  const cashIn = useMemo(() => {
+    const b = [{ k: "late", l: "DUE NIKAL GAYA", v: 0, n: 0 }, { k: "week", l: "IS HAFTE (7 DIN)", v: 0, n: 0 }, { k: "next", l: "AGLE HAFTE", v: 0, n: 0 }, { k: "later", l: "USKE BAAD", v: 0, n: 0 }, { k: "nodate", l: "DATE NAHI PATA", v: 0, n: 0 }];
+    out.open.forEach((x) => { const r = b.find((y) => y.k === whenOf(x)); r.v += saleBalance(x); r.n += 1; });
+    return b;
+  }, [out, today]);
+  const lowList = useMemo(() => sales.filter(isLow), [sales, minMargin]);
 
   const list = useMemo(() => {
     const rank = { overdue: 0, partial: 1, pending: 1, paid: 2 };
     return sales
       .filter((s) => typeFilter === "ALL" || s.channel === typeFilter)
       .filter((s) => { const st = saleStatus(s, today); return statusFilter === "all" || (statusFilter === "open" && st !== "paid") || (statusFilter === "overdue" && st === "overdue") || (statusFilter === "paid" && st === "paid"); })
+      .filter((s) => !whenFilter || (saleBalance(s) > 0 && whenOf(s) === whenFilter))
+      .filter((s) => !lowOnly || isLow(s))
+      .filter((s) => { const t = q.trim().toLowerCase(); return !t || `${s.party} ${s.item} ${s.note} ${s.lxOrder || ""}`.toLowerCase().includes(t); })
       .sort((a, b) => {
         const ra = rank[saleStatus(a, today)], rb = rank[saleStatus(b, today)];
         if (ra !== rb) return ra - rb;
         if (ra === 2) return b.date.localeCompare(a.date) || b.id - a.id;
         return (a.dueDate || "9999").localeCompare(b.dueDate || "9999") || a.date.localeCompare(b.date);
       });
-  }, [sales, typeFilter, statusFilter, today]);
+  }, [sales, typeFilter, statusFilter, today, whenFilter, lowOnly, q, minMargin]);
 
   const renderSaleRef = useRef(null);
   // party-wise: every buyer once, with each of their entries kept separate underneath
@@ -5830,6 +5846,31 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
         </>
       )}
 
+      {out.open.length > 0 && (
+        <>
+          <SectionLabel text="PAISA KAB AAYEGA" />
+          <div style={{ ...S.formCard, gap: 6 }}>
+            {cashIn.filter((b) => b.n > 0).map((b) => (
+              <button key={b.k} onClick={() => { setWhenFilter(whenFilter === b.k ? null : b.k); setStatusFilter("open"); }} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: whenFilter === b.k ? T.surface : "transparent", border: `1px solid ${whenFilter === b.k ? T.lineStrong : "transparent"}`, borderRadius: 8, padding: "8px 8px", color: T.ivory, fontFamily: "inherit", cursor: "pointer" }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: b.k === "late" ? T.orange : b.k === "week" ? T.green : T.muted }}>{b.l} · {b.n}</span>
+                <span className="tnum" style={{ fontSize: 13, fontWeight: 700, color: b.k === "late" ? T.orange : T.ivory }}>{fmt(b.v)}</span>
+              </button>
+            ))}
+            <div style={{ fontSize: 10, color: T.muted, lineHeight: 1.5 }}>Due date ke hisaab se. Kisi line par tap karo to sirf wahi entries dikhengi.</div>
+          </div>
+        </>
+      )}
+      {lowList.length > 0 && (
+        <button onClick={() => { setLowOnly(!lowOnly); setStatusFilter("all"); }} style={{ ...S.formCard, marginTop: 10, width: "100%", textAlign: "left", cursor: "pointer", color: T.ivory, fontFamily: "inherit", border: `1px solid ${lowOnly ? T.orange : T.orange + "55"}` }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.orange }}>⚠ {lowList.length} SALE {minMargin}% SE KAM MARGIN PAR{lowOnly ? " — DIKHA RAHA HAI (tap = hatao)" : ""}</div>
+          <div style={{ fontSize: 10.5, color: T.muted, marginTop: 3 }} className="tnum">In par kul profit {fmtSigned(lowList.reduce((a, x) => a + (x.saleValue - x.cost), 0))} · sale {fmt(lowList.reduce((a, x) => a + x.saleValue, 0))}</div>
+        </button>
+      )}
+
+      <input placeholder="dhoondo — naam, item ya order id" value={q} onChange={(e) => setQ(e.target.value)} autoCapitalize="off" style={{ ...S.input, width: "100%", marginTop: 14 }} />
+      {(whenFilter || lowOnly || q.trim()) && (
+        <button style={{ ...S.correctionLink, marginTop: 6 }} onClick={() => { setWhenFilter(null); setLowOnly(false); setQ(""); }}>FILTER HATAO · {list.length} ENTRIES · {fmt(list.reduce((a, x) => a + saleBalance(x), 0))} BAAKI</button>
+      )}
       <div style={{ ...S.toggleWrap, marginTop: 16, marginBottom: 0 }}>
         {[["party", "PARTY-WISE"], ["list", "SAB ENTRIES"]].map(([k, l]) => (
           <button key={k} onClick={() => { setView(k); bizLS.set("sales_view", k); }} style={{ ...S.toggleBtn, flex: 1, padding: "9px 4px", ...(view === k ? { background: T.blue, color: T.bg } : {}) }}>{l}</button>
@@ -5859,7 +5900,7 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }} onClick={() => setOpenId(isOpen ? null : s.id)}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 14, fontWeight: 700 }}>{s.party} <span style={{ ...S.fineTag, marginLeft: 4, color: SALE_TYPE_COLOR[s.channel] || T.muted, borderColor: `${SALE_TYPE_COLOR[s.channel] || T.muted}66` }}>{(s.channel || "").toUpperCase()}</span></div>
-                <div style={{ fontSize: 10.5, color: T.muted, marginTop: 3 }}>{s.item ? `${s.item} · ` : ""}{fmtDateShort(s.date)}{profit !== null ? <span style={{ color: profit >= 0 ? T.green : T.orange, fontWeight: 700 }}> · profit {fmtSigned(profit)} ({((profit / s.cost) * 100).toFixed(0)}%)</span> : ""}</div>
+                <div style={{ fontSize: 10.5, color: T.muted, marginTop: 3 }}>{s.item ? `${s.item} · ` : ""}{fmtDateShort(s.date)}{profit !== null ? <span style={{ color: profit >= 0 ? T.green : T.orange, fontWeight: 700 }}> · profit {fmtSigned(profit)} ({((profit / s.cost) * 100).toFixed(0)}%){isLow(s) ? " ⚠ LOW" : ""}</span> : ""}</div>
               </div>
               <div style={{ textAlign: "right", flexShrink: 0 }}>
                 <div style={{ fontSize: 15, fontWeight: 700, color: bal > 0 ? T.blue : T.green }} className="tnum">{bal > 0 ? fmt(bal) : "✓ PAID"}</div>
