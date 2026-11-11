@@ -2474,6 +2474,7 @@ export default function Khata() {
         {tab === "business" && <BusinessTab data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "sales" && <SalesTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "deal" && <DealTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
+        {tab === "bizstats" && <LuxellaStats />}
         {tab === "grow" && <GrowTab data={data} persist={persist} setToast={setToast} />}
         {tab === "income" && <IncomeTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "expense" && <ExpenseTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
@@ -2604,7 +2605,7 @@ function TopBar({ saving, xp, streak, nextCountryGoal, onOpenLockSetup, onOpenAc
 // which tabs each view gets — PERSONAL and BUSINESS each have their own set, ALL shows everything
 const NAV_BY_MODE = {
   personal: ["overview", "income", "expense", "funds", "goals", "dues", "accounts", "investments", "pool", "analytics"],
-  business: ["overview", "sales", "deal", "business", "dues", "investments", "grow"],
+  business: ["overview", "sales", "deal", "business", "dues", "investments", "grow", "bizstats"],
 };
 const BIZ_NAV_LABEL = { overview: "Luxella", business: "Books", dues: "Lena-Dena", investments: "Stock" };
 function BottomNav({ tab, setTab, mode }) {
@@ -2614,6 +2615,7 @@ function BottomNav({ tab, setTab, mode }) {
     { id: "sales", label: "Sales", icon: Receipt },
     { id: "deal", label: "Deal", icon: Calculator },
     { id: "grow", label: "Grow", icon: TrendingUp },
+    { id: "bizstats", label: "Stats", icon: BarChart3 },
     { id: "income", label: "Income", icon: ArrowUpCircle },
     { id: "expense", label: "Expense", icon: ArrowDownCircle },
     { id: "funds", label: "Funds", icon: Wallet },
@@ -7015,6 +7017,169 @@ function simulateGrowth({ capital, marginPct, cycleDays, reinvestPct, target }) 
   return { perCycle, perMonth: (perCycle * 30) / cycleDays, monthlyReturnPct: (m * 30 * 100) / cycleDays, hitDays: hit, marks };
 }
 const spanText = (days) => (days === null ? "60 saal me bhi nahi" : days < 45 ? `${Math.max(1, Math.round(days))} din` : days < 730 ? `${(days / 30).toFixed(1)} mahine` : `${(days / 365).toFixed(1)} saal`);
+
+// ---- Luxella stats: the whole order book from the portal (every order, paid or not), read-only.
+// Profit and margin are only ever computed on orders whose landed cost is known; the cards say how many that is.
+let _lxStatsCache = null;
+async function loadLuxellaOrders() {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/khata_lx_stats`, { method: "POST", headers: await sbHeaders(), body: "{}" });
+  if (!res.ok) throw new Error(`stats ${res.status}`);
+  return res.json();
+}
+function luxellaStats(rows, today, days) {
+  const from = days ? dAgoISO(today, days - 1) : null;
+  const inP = (r) => !from || (r.od && r.od >= from);
+  const isCancel = (r) => /^cancel/i.test(r.st);
+  const live = rows.filter((r) => !isCancel(r) && r.payout > 0);
+  const P = live.filter(inP);
+  const costed = (a) => a.filter((r) => r.landed > 0);
+  const sum = (a, f) => a.reduce((x, r) => x + (f(r) || 0), 0);
+  const marginOf = (a) => { const c = costed(a); const cost = sum(c, (r) => r.landed); return cost > 0 ? (sum(c, (r) => r.payout - r.landed) / cost) * 100 : null; };
+  const pct = (r) => ((r.payout - r.landed) / r.landed) * 100;
+  const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+  const group = (a, key) => { const m = {}; a.forEach((r) => { const k = key(r) || "—"; (m[k] = m[k] || []).push(r); }); return Object.entries(m); };
+  const c = costed(P);
+  const cancelled = rows.filter((r) => isCancel(r) && inP(r));
+  const head = {
+    n: P.length, rev: sum(P, (r) => r.payout), costN: c.length, cost: sum(c, (r) => r.landed), profit: sum(c, (r) => r.payout - r.landed), margin: marginOf(P),
+    low: c.filter((r) => pct(r) < 20).length, loss: c.filter((r) => r.payout < r.landed).length, lossAmt: sum(c.filter((r) => r.payout < r.landed), (r) => r.payout - r.landed),
+    received: sum(P.filter((r) => r.ps === "Received"), (r) => r.payout), pending: sum(P.filter((r) => r.ps !== "Received"), (r) => r.payout),
+    cancelN: cancelled.length, cancelVal: sum(cancelled, (r) => r.payout), cancelRate: P.length + cancelled.length ? (cancelled.length / (P.length + cancelled.length)) * 100 : 0,
+  };
+  const monthly = group(live.filter((r) => r.od), (r) => r.od.slice(0, 7)).sort((a, b) => a[0].localeCompare(b[0])).slice(-8).map(([m, a]) => ({ m, label: new Date(m + "-01T00:00:00").toLocaleString("en", { month: "short" }).toUpperCase(), n: a.length, rev: sum(a, (r) => r.payout), profit: sum(costed(a), (r) => r.payout - r.landed), margin: marginOf(a), costN: costed(a).length }));
+  const buyers = group(P, (r) => r.client).map(([k, a]) => {
+    const paid = a.filter((r) => r.ps === "Received" && r.pd && !r.pd_approx);
+    return { k, n: a.length, rev: sum(a, (r) => r.payout), profit: sum(costed(a), (r) => r.payout - r.landed), costN: costed(a).length, margin: marginOf(a), low: costed(a).filter((r) => pct(r) < 20).length,
+      pending: sum(a.filter((r) => r.ps !== "Received"), (r) => r.payout), d2p: avg(paid.filter((r) => r.dd).map((r) => dayDiff(r.dd, r.pd)).filter((d) => d >= 0)), o2p: avg(paid.filter((r) => r.od).map((r) => dayDiff(r.od, r.pd)).filter((d) => d >= 0)), paidN: paid.length };
+  }).sort((a, b) => b.rev - a.rev);
+  const brands = group(c, (r) => r.brand || "Brand nahi likha").map(([k, a]) => ({ k, n: a.length, profit: sum(a, (r) => r.payout - r.landed), margin: marginOf(a), low: a.filter((r) => pct(r) < 20).length })).filter((b) => b.n >= 3).sort((a, b) => b.profit - a.profit);
+  const resh = group(P.filter((r) => r.rs && r.reship > 0), (r) => r.rs).map(([k, a]) => ({ k, n: a.length, total: sum(a, (r) => r.reship), per: sum(a, (r) => r.reship) / a.length, share: sum(costed(a), (r) => r.landed) > 0 ? (sum(costed(a), (r) => r.reship) / sum(costed(a), (r) => r.landed)) * 100 : null })).sort((a, b) => b.n - a.n);
+  // money not yet back, by where the order is sitting (always all-time: this is the current position)
+  const unpaid = live.filter((r) => r.ps !== "Received");
+  const stageOf = (r) => (/to place/i.test(r.st) ? "Order lagana baaki" : /deliver/i.test(r.st) ? (/kicks ?machine/i.test(r.client) && !r.mrn ? "Pahunch gaya, MRN baaki" : "Pahunch gaya, paisa baaki") : /landed india/i.test(r.st) ? "India aa gaya" : "Raaste me (reshipper / transit)");
+  const order = ["Order lagana baaki", "Raaste me (reshipper / transit)", "India aa gaya", "Pahunch gaya, MRN baaki", "Pahunch gaya, paisa baaki"];
+  const stages = group(unpaid, stageOf).map(([k, a]) => ({ k, n: a.length, value: sum(a, (r) => r.payout), cost: sum(costed(a), (r) => r.landed), margin: marginOf(a), age: avg(a.filter((r) => r.od).map((r) => dayDiff(r.od, today))), wait: avg(a.filter((r) => r.dd).map((r) => dayDiff(r.dd, today))) })).sort((a, b) => order.indexOf(a.k) - order.indexOf(b.k));
+  const delivered = P.filter((r) => r.od && r.dd);
+  const speed = { o2d: avg(delivered.map((r) => dayDiff(r.od, r.dd)).filter((d) => d >= 0)), n: delivered.length };
+  const worst = [...c].sort((a, b) => pct(a) - pct(b)).slice(0, 6).map((r) => ({ id: r.id, k: `${r.brand ? r.brand + " " : ""}${r.item}`.slice(0, 44), client: r.client, st: r.st, payout: r.payout, landed: r.landed, pct: pct(r) }));
+  return { head, monthly, buyers, brands, resh, stages, speed, worst };
+}
+
+function LuxellaStats() {
+  const today = todayISO();
+  const [rows, setRows] = useState(_lxStatsCache);
+  const [err, setErr] = useState(null);
+  const [days, setDays] = useState(() => bizLS.get("stats_days", 90));
+  const load = useCallback(async () => {
+    setErr(null);
+    try { const r = await loadLuxellaOrders(); _lxStatsCache = r; setRows(r); } catch { setErr("Portal ka data nahi aaya — dobara try karo."); }
+  }, []);
+  useEffect(() => { if (authSession && !_lxStatsCache) load(); }, [load]);
+  const st = useMemo(() => (rows && rows.length ? luxellaStats(rows, today, days) : null), [rows, today, days]);
+  const mcol = (m) => (m === null ? T.muted : m < 20 ? T.orange : m < 25 ? T.gold : T.green);
+  const mtxt = (m) => (m === null ? "—" : `${m.toFixed(1)}%`);
+  const row = (cells, o = {}) => (
+    <div style={{ display: "grid", gridTemplateColumns: o.cols || "1.5fr 0.6fr 1fr 0.8fr", gap: 6, alignItems: "baseline", fontSize: o.head ? 9.5 : 11.5, fontWeight: 700, color: o.head ? T.muted : T.ivory, letterSpacing: o.head ? "0.05em" : 0, padding: "5px 0", borderTop: o.head || o.first ? "none" : `1px solid ${T.line}` }}>
+      {cells.map((x, i) => <span key={i} className={i ? "tnum" : ""} style={{ textAlign: i ? "right" : "left", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: i ? "nowrap" : "normal", ...(x && x.color ? { color: x.color } : {}) }}>{x && x.t !== undefined ? x.t : x}</span>)}
+    </div>
+  );
+  if (!authSession) return <div style={{ ...S.formCard, marginTop: 16 }}><div style={{ fontSize: 12.5, fontWeight: 700 }}>Stats ke liye login chahiye</div><div style={{ fontSize: 11, color: T.muted, lineHeight: 1.5 }}>Ye portal ke saare orders se banta hai, aur wo data sirf tumhare login par khulta hai. Upar shield button se login karo.</div></div>;
+  if (err) return <div style={{ ...S.formCard, marginTop: 16 }}><div style={{ fontSize: 12, color: T.orange, fontWeight: 700 }}>{err}</div><button style={S.submitBtnGreen} className="npop" onClick={load}>RETRY</button></div>;
+  if (!rows) return <div style={{ fontSize: 11, color: T.muted, marginTop: 24, textAlign: "center" }}>portal se orders aa rahe hain…</div>;
+  if (!st) return <EmptyNote text="portal me abhi koi order nahi" />;
+  const h = st.head, maxRev = Math.max(1, ...st.monthly.map((m) => m.rev)), maxStage = Math.max(1, ...st.stages.map((x) => x.value));
+  return (
+    <div>
+      <div style={{ ...S.toggleWrap, marginTop: 14 }}>
+        {[[30, "30 DIN"], [90, "90 DIN"], [0, "SAB"]].map(([d, l]) => (
+          <button key={d} onClick={() => { setDays(d); bizLS.set("stats_days", d); }} style={{ ...S.toggleBtn, flex: 1, padding: "9px 4px", ...(days === d ? { background: T.blue, color: T.bg } : {}) }}>{l}</button>
+        ))}
+      </div>
+      <div style={S.statGrid}>
+        <div style={S.statBox}><div style={S.statBoxLabel}>SALE · {h.n} ORDER</div><div style={{ ...S.statBoxNum, color: T.ivory }} className="tnum">{fmt(h.rev)}</div></div>
+        <div style={S.statBox}><div style={S.statBoxLabel}>PROFIT · {h.costN} ME COST PATA</div><div style={{ ...S.statBoxNum, color: h.profit >= 0 ? T.green : T.orange }} className="tnum">{fmtSigned(h.profit)}</div></div>
+        <div style={S.statBox}><div style={S.statBoxLabel}>MARGIN (COST PAR)</div><div style={{ ...S.statBoxNum, color: mcol(h.margin) }} className="tnum">{mtxt(h.margin)}</div></div>
+        <div style={{ ...S.statBox, ...(h.low ? { border: `1px solid ${T.orange}55` } : {}) }}><div style={S.statBoxLabel}>20% SE KAM</div><div style={{ ...S.statBoxNum, color: h.low ? T.orange : T.muted }} className="tnum">{h.low} <span style={{ fontSize: 11, color: T.muted }}>/ {h.costN}</span></div></div>
+        <div style={S.statBox}><div style={S.statBoxLabel}>PAISA AA GAYA</div><div style={{ ...S.statBoxNum, color: T.green }} className="tnum">{fmt(h.received)}</div></div>
+        <div style={S.statBox}><div style={S.statBoxLabel}>PAISA BAAKI</div><div style={{ ...S.statBoxNum, color: T.blue }} className="tnum">{fmt(h.pending)}</div></div>
+      </div>
+      {h.n > h.costN && <div style={{ fontSize: 10, color: T.gold, fontWeight: 700, marginTop: 8, lineHeight: 1.5 }}>{h.n - h.costN} order me landed cost nahi hai — unka profit upar gina nahi gaya.</div>}
+
+      <SectionLabel text="MAHINE KE HISAAB SE" />
+      <div style={{ ...S.formCard, gap: 4 }}>
+        {row(["MAHINA", "ORDER", "SALE", "PROFIT", "MARGIN"], { head: true, cols: "0.7fr 0.6fr 1fr 1fr 0.8fr" })}
+        {st.monthly.map((m, i) => (
+          <div key={m.m}>
+            {row([m.label, m.n, fmt(m.rev), m.costN ? fmtSigned(m.profit) : "—", { t: mtxt(m.margin), color: mcol(m.margin) }], { cols: "0.7fr 0.6fr 1fr 1fr 0.8fr", first: i === 0 })}
+            <div style={{ height: 4, borderRadius: 3, background: T.bg, overflow: "hidden" }}><div style={{ width: `${(m.rev / maxRev) * 100}%`, height: "100%", background: T.blue, borderRadius: 3, position: "relative" }}><div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${m.rev > 0 ? Math.max(0, Math.min(100, (m.profit / m.rev) * 100)) : 0}%`, background: T.green }} /></div></div>
+          </div>
+        ))}
+        <div style={{ fontSize: 10, color: T.muted, marginTop: 4 }}>Neeli patti = sale, hari = usme profit. Mahina order ki date se.</div>
+      </div>
+
+      <SectionLabel text="PAISA ABHI KAHAN ATKA HAI" />
+      <div style={{ ...S.formCard, gap: 10 }}>
+        {st.stages.map((x) => (
+          <div key={x.k}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700 }}><span>{x.k} · {x.n}</span><span className="tnum" style={{ color: /baaki$/.test(x.k) && /Pahunch/.test(x.k) ? T.orange : T.ivory }}>{fmt(x.value)}</span></div>
+            <div style={{ height: 5, borderRadius: 3, background: T.bg, overflow: "hidden", margin: "4px 0" }}><div style={{ width: `${(x.value / maxStage) * 100}%`, height: "100%", background: /Pahunch/.test(x.k) ? T.orange : T.blue, borderRadius: 3 }} /></div>
+            <div style={{ fontSize: 10.5, color: T.muted }} className="tnum">{x.cost > 0 ? `laga ${fmt(x.cost)} · ` : ""}margin <span style={{ color: mcol(x.margin), fontWeight: 700 }}>{mtxt(x.margin)}</span>{x.wait !== null && /Pahunch/.test(x.k) ? ` · delivery ko avg ${x.wait.toFixed(0)} din` : x.age !== null ? ` · order ko avg ${x.age.toFixed(0)} din` : ""}</div>
+          </div>
+        ))}
+        {st.speed.o2d !== null && <div style={{ fontSize: 10, color: T.muted, borderTop: `1px solid ${T.line}`, paddingTop: 8 }}>Tumhara normal order → delivery: {st.speed.o2d.toFixed(0)} din ({st.speed.n} order). Isse zyada purana raaste wala order = atka hua paisa.</div>}
+      </div>
+
+      <SectionLabel text="BUYER-WISE" />
+      <div style={{ ...S.formCard, gap: 4 }}>
+        {row(["BUYER", "ORDER", "SALE", "MARGIN"], { head: true })}
+        {st.buyers.map((b, i) => (
+          <div key={b.k}>
+            {row([b.k, b.n, fmt(b.rev), { t: mtxt(b.margin), color: mcol(b.margin) }], { first: i === 0 })}
+            <div style={{ fontSize: 10, color: T.muted, paddingBottom: 4 }} className="tnum">{b.costN ? `profit ${fmtSigned(b.profit)} (${b.costN} order)` : "cost pata nahi"}{b.low ? <span style={{ color: T.orange }}> · {b.low} order 20% se kam</span> : null}{b.pending > 0 ? ` · ${fmt(b.pending)} baaki` : ""}{b.d2p !== null ? ` · delivery ke ${b.d2p.toFixed(0)} din baad paisa (${b.paidN})` : ""}</div>
+          </div>
+        ))}
+      </div>
+
+      {st.brands.length > 0 && (
+        <>
+          <SectionLabel text="BRAND-WISE (3+ ORDER)" />
+          <div style={{ ...S.formCard, gap: 4 }}>
+            {row(["BRAND", "ORDER", "PROFIT", "MARGIN"], { head: true })}
+            {st.brands.map((b, i) => row([<span key="k">{b.k}{b.low ? <span style={{ color: T.orange, fontSize: 10 }}> · {b.low} kam</span> : null}</span>, b.n, fmtSigned(b.profit), { t: mtxt(b.margin), color: mcol(b.margin) }], { first: i === 0 }))}
+          </div>
+        </>
+      )}
+
+      {st.resh.length > 0 && (
+        <>
+          <SectionLabel text="RESHIPPER KA KHARCHA" />
+          <div style={{ ...S.formCard, gap: 4 }}>
+            {row(["RESHIPPER", "ORDER", "KUL", "PER ORDER"], { head: true })}
+            {st.resh.map((b, i) => row([<span key="k">{b.k}{b.share !== null ? <span style={{ color: T.muted, fontSize: 10 }}> · landed ka {b.share.toFixed(1)}%</span> : null}</span>, b.n, fmt(b.total), fmt(b.per)], { first: i === 0 }))}
+            <div style={{ fontSize: 10, color: T.muted, marginTop: 4 }}>Sirf wo order jinme reship cost likha hai.</div>
+          </div>
+        </>
+      )}
+
+      <SectionLabel text="SABSE KAM MARGIN WALE ORDER" />
+      <div style={{ ...S.formCard, gap: 4 }}>
+        {st.worst.map((w, i) => (
+          <div key={w.id} style={{ borderTop: i ? `1px solid ${T.line}` : "none", padding: "6px 0" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11.5, fontWeight: 700 }}><span style={{ minWidth: 0 }}>{w.k}</span><span className="tnum" style={{ color: mcol(w.pct), flexShrink: 0 }}>{w.pct.toFixed(1)}%</span></div>
+            <div style={{ fontSize: 10, color: T.muted }} className="tnum">{w.id} · {w.client} · {w.st} · sale {fmt(w.payout)} − cost {fmt(w.landed)} = {fmtSigned(w.payout - w.landed)}</div>
+          </div>
+        ))}
+      </div>
+
+      <SectionLabel text="CANCEL AUR LOSS" />
+      <div style={S.formCard}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700 }}><span>Cancel hue order</span><span className="tnum">{h.cancelN} · {fmt(h.cancelVal)} ({h.cancelRate.toFixed(0)}%)</span></div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700 }}><span>Ghaate wale order</span><span className="tnum" style={{ color: h.loss ? T.orange : T.muted }}>{h.loss}{h.loss ? ` · ${fmtSigned(h.lossAmt)}` : ""}</span></div>
+      </div>
+      <button style={{ ...S.correctionLink, marginTop: 14 }} onClick={() => { _lxStatsCache = null; setRows(null); load(); }}>PORTAL SE DOBARA LAO</button>
+    </div>
+  );
+}
 
 // ---- Money moves: concrete things that raise income or cut spending, each with the rupees it is worth.
 // Everything here is arithmetic on his own entries — nothing is estimated from outside. A move only appears
