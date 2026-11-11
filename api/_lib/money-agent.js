@@ -33,7 +33,7 @@ CORE ACTIONS — always via tools, never by guessing:
    - Once logged, tell the user the potential profit (expected selling price minus estimated landed cost) plainly.
 6. CONFIRM A B2B ORDER HAS LANDED (e.g. "sourcex order land ho gaya, reship 800 tha") — confirm_order_landed tool. Ask for the actual reship cost if not given. This logs whatever expense(s) were deferred and finalizes the real landed cost — tell the user the actual profit (expected selling price minus actual landed cost), and how it compares to what was estimated at order time.
 7. REMEMBER a durable business pattern worth not re-explaining next time (a typical reship cost for a supplier, a recurring margin, a phrasing habit) — remember tool. Use this sparingly, only for things genuinely worth carrying forward, especially right after confirm_order_landed reveals a real number worth keeping.
-8. LOG A NEW SALE (e.g. "rahul ko 12k ka bag becha, 5k aaya, baaki 15 din me") — log_sale_order tool. It creates a sale in the Sales tracker: what was received now is booked as business income, the rest stays open on the sale with its due date. You need the buyer, the sale value and how much was received right now — if he did not say how much has come in so far, ASK; never assume 0 or full. When money later arrives from a buyer with an open sale, use record_sale_payment (not settle_due, not log_entry).
+8. LOG A NEW SALE (e.g. "rahul ko 12k ka bag becha, 5k aaya, baaki 15 din me") — log_sale_order tool. It creates a sale in the Sales tracker: what was received now is booked as business income, the rest stays open on the sale with its due date. You need the buyer, the sale value and how much was received right now — if he did not say how much has come in so far, ASK; never assume 0 or full. When money later arrives from a buyer with an open sale, use record_sale_payment (not settle_due, not log_entry). A sale amount is revenue, not profit: you also need the landed cost (ask if he has not said it); the cost is booked automatically with each payment, so never log it again as a separate expense.
 9. SETTLE something ALREADY pending — money that just arrived or was just paid, not a new order or sale (e.g. "sourcex se 15k agya", "rahul ne baaki 15k de diya", "supplier ko 3k pay kiya") — settle_due tool. This is what actually moves money for a receivable/payable — a sale's "money due" or a B2B order's cost sit inert until this fires. Matches by party name; supports partial settlement (whatever's left stays pending).
 10. LOG INVENTORY BOUGHT NOW TO RESELL LATER, not part of a named supplier-order flow (e.g. "bought 5 shirts for 2000, will sell for 3500") — log_cashout tool.
 11. RECORD A BRAND-NEW AMOUNT OWED, nothing paid yet — someone owes the user, or the user owes someone (e.g. "Rahul owes me 5000", "I owe the supplier 3000") — add_due tool. This only records it; settle_due is what moves money later.
@@ -158,9 +158,9 @@ const TOOLS = [
         money_received_now: { type: "number", description: "cash actually received right now — 0 if nothing yet. Must come from the user, never assumed" },
         item_name: { type: "string", description: "what was sold, optional" },
         due_date: { type: "string", description: "YYYY-MM-DD the remaining money should arrive by, optional — work it out from phrases like '15 din me'" },
-        cost_price: { type: "number", description: "what the item cost, only if the user says it" },
+        cost_price: { type: "number", description: "landed cost of what was sold (item + reship). Profit depends on it — if the user has not said it, ASK before logging. Pass 0 only if he explicitly says he does not know / will add it later" },
       },
-      required: ["client_name", "sale_value", "money_received_now"],
+      required: ["client_name", "sale_value", "money_received_now", "cost_price"],
     },
   },
   {
@@ -438,15 +438,42 @@ function saleIncomeSource(s) {
   if (/kicks ?machine/.test(p)) return "KicksMachine";
   return s.channel === "B2B" ? "Other Business" : "Direct Client";
 }
+// A sale amount is revenue, not profit: each payment also brings its share of the sale's cost into the
+// books as a linked business expense (mirrors rebuildSaleCogs in src/App.jsx).
+let _seq = 0;
+const nextId = () => { _seq = (_seq + 2) % 1000; return Date.now() + _seq; };
+function rebuildSaleCogs(data, saleId) {
+  const sale = (data.sales || []).find((s) => s.id === saleId);
+  let d = data;
+  data.expenses.filter((e) => e.cogsSaleId === saleId).forEach((e) => {
+    const fb = { ...d.fundBalances };
+    Object.entries(e.fundDelta || {}).forEach(([fid, amt]) => { fb[fid] = (fb[fid] || 0) - amt; });
+    d = { ...d, fundBalances: fb };
+  });
+  d = { ...d, expenses: d.expenses.filter((e) => e.cogsSaleId !== saleId) };
+  if (!sale || !(sale.cost > 0) || sale.costLogged || !(sale.saleValue > 0)) return d;
+  const total = Math.round(sale.cost);
+  let cum = 0, used = 0;
+  (sale.payments || []).forEach((p) => {
+    cum += p.amount;
+    const target = cum >= sale.saleValue ? total : Math.round((total * cum) / sale.saleValue);
+    const part = target - used;
+    used = target;
+    if (part <= 0) return;
+    const { fundDelta, fundBalances } = applyFundDelta(d, part, -1);
+    d = { ...d, fundBalances, expenses: [...d.expenses, { id: nextId(), amount: part, category: "Sourcing/Business", note: `${sale.party}${sale.item ? ` — ${sale.item}` : ""} ka cost (sale ke saath auto)`, date: p.date, unnecessary: false, fine: 0, fundDelta, photo: null, scope: "business", cogsSaleId: saleId, auto: true }] };
+  });
+  return d;
+}
 // A payment is real money in: a business income entry linked by saleId, plus a payment row on the sale.
 function applySalePayment(data, saleId, amt, date) {
   const sale = (data.sales || []).find((s) => s.id === saleId);
   if (!sale || !amt || amt <= 0) return data;
   const { fundDelta, fundBalances } = applyFundDelta(data, amt, 1);
-  const incomeId = Date.now() + Math.floor(Math.random() * 1000);
+  const incomeId = nextId();
   const income = { id: incomeId, amount: amt, source: saleIncomeSource(sale), note: `${sale.party}${sale.item ? ` — ${sale.item}` : ""} (sale payment)`, date, fundDelta, scope: "business", saleId };
-  const payment = { id: incomeId + 1, date, amount: amt, incomeId };
-  return { ...data, income: [...data.income, income], fundBalances, sales: data.sales.map((s) => (s.id === saleId ? { ...s, payments: [...(s.payments || []), payment] } : s)) };
+  const payment = { id: nextId(), date, amount: amt, incomeId };
+  return rebuildSaleCogs({ ...data, income: [...data.income, income], fundBalances, sales: data.sales.map((s) => (s.id === saleId ? { ...s, payments: [...(s.payments || []), payment] } : s)) }, saleId);
 }
 
 function computeLogSaleOrder(data, input) {
@@ -466,7 +493,8 @@ function computeLogSaleOrder(data, input) {
   const meta = due > 0
     ? `Sale logged — ${buyer} (${sale.channel}), ₹${value}. ₹${got} received, ₹${due} still due${dueDate ? ` by ${dueDate}` : " (no due date given)"}.`
     : `Sale logged — ${buyer} (${sale.channel}), ₹${value} fully received.`;
-  return { data: nextData, meta };
+  const costNote = sale.cost > 0 ? ` Cost ₹${sale.cost}, profit ₹${value - sale.cost} — each payment books its share of the cost automatically.` : " No cost given — until it is added in the Sales tab, money received on this sale shows as pure profit.";
+  return { data: nextData, meta: meta + costNote };
 }
 
 function computeSalePayment(data, input) {

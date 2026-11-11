@@ -281,3 +281,23 @@ pace, receivables concentrated on one party, waste and personal-spend spikes, un
 same-day duplicates. `SmartFeed` shows it at the top of Home (filtered by the active view, hideable
 for the day) and James receives the same list in its prompt. New rules go in `buildInsights`.
 The New Sale form suggests known party names and shows that buyer's history (type, pay speed, open balance).
+
+## A sale is revenue, not profit (cost of goods sold)
+
+`rebuildSaleCogs(data, saleId)` keeps one linked business expense per payment (`cogsSaleId`, `auto`)
+for that payment's share of the sale's `cost`, so income − expense is the real profit everywhere
+(today's profit, statement, fund split). It is called from `applySalePayment`, `removeSalePayment`,
+the sale edit and the "COST DAALO" prompt. It does nothing when the cost is unknown or when the sale
+has `costLogged` (the user entered that cost separately). A sale with no cost is flagged on the card
+and in the smart feed, because its money counts as pure profit until the cost is added. Never also log
+a sale's cost as a separate expense; payables that are already part of a sale's cost carry
+`noLedger: true` so settling them books nothing. The bots mirror this in `api/_lib/money-agent.js`.
+
+## My day (Home)
+
+`MyDay` shows a greeting and a short brief (today vs daily target, late money, his 8–10 PM sourcing
+window, what he can still spend today vs last month's personal spend), one-tap shortcuts learned from
+entries he repeats (`learnedShortcuts`), each goal's plan from `goalPlans` (fund balance, how much more
+net profit it needs given the fund's %, ETA at the last-30-day pace and at the monthly target) and
+patterns from his history (`myPatterns`). James gets an "ABOUT HIM" block with the same goals and his
+business rules.

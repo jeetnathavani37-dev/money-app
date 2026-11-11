@@ -1127,7 +1127,7 @@ const JAMES_FIELD_FLOWS = {
     { key: "moneyReceivedNow", label: "cash already received right now — number. 0 if he says nothing was paid yet / it is all due later. Ask only if the message gives no hint at all" },
     { key: "itemName", optional: true, label: "what was sold" },
     { key: "dueDate", optional: true, label: 'when the remaining money should arrive, as YYYY-MM-DD — work it out from phrases like "15 din me", "next week", "month end" using TODAY; null if not said' },
-    { key: "costPrice", optional: true, label: "what the item cost him — number, only if he says it" },
+    { key: "costPrice", label: "the landed cost of what he sold (item + reship) — number. Profit depends on it, so if he has not said it, ask \"iska landed cost kitna tha?\". Use 0 ONLY if he explicitly says he does not know / will add it later" },
   ],
   sale_payment: [
     { key: "party", label: "the buyer's name exactly as written in OPEN SALES" },
@@ -1391,7 +1391,8 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
   const describe = (i, f) => {
     if (i === "sale_order") {
       const v = num(f.saleValue), got = Math.min(v, num(f.moneyReceivedNow));
-      return `SALE · ${f.clientName} (${SALE_TYPES.includes(f.channel) ? f.channel : "Client"})${f.itemName ? ` · ${f.itemName}` : ""}\n${fmt(v)} ki sale · ${fmt(got)} aaya · ${fmt(v - got)} baaki${f.dueDate ? ` · ${fmtDateShort(f.dueDate)} tak` : v - got > 0 ? " · due date nahi" : ""}${f.costPrice ? `\ncost ${fmt(num(f.costPrice))}` : ""}`;
+      const c = num(f.costPrice);
+      return `SALE · ${f.clientName} (${SALE_TYPES.includes(f.channel) ? f.channel : "Client"})${f.itemName ? ` · ${f.itemName}` : ""}\n${fmt(v)} ki sale · ${fmt(got)} aaya · ${fmt(v - got)} baaki${f.dueDate ? ` · ${fmtDateShort(f.dueDate)} tak` : v - got > 0 ? " · due date nahi" : ""}\n${c > 0 ? `cost ${fmt(c)} → profit ${fmtSigned(v - c)} (${(((v - c) / c) * 100).toFixed(0)}%)` : "cost nahi pata — baad me daalna, tab tak profit galat dikhega"}`;
     }
     if (i === "sale_payment") return `PAYMENT AAYA · ${f.party} se ${fmt(num(f.amount))}\nuski open sale me lagega`;
     if (i === "settle_due") return `DUE SETTLE · ${f.party} · ${fmt(num(f.amount))}`;
@@ -1454,6 +1455,13 @@ function JamesButton({ data, persist, registerActivity, setToast, triggerNoteAni
 
 TODAY: ${today}
 
+=== ABOUT HIM (use this to make answers personal — his goals, his rules, his numbers) ===
+North star: ${data.northStar || "not set"}
+Goals: ${goalPlans(data, today).map((p2) => `${p2.g.name} — target ₹${p2.g.target}, fund "${p2.fund ? p2.fund.name : "?"}" (${p2.pct}% of everything he nets) has ₹${p2.bal}, ₹${p2.left} to go = ₹${p2.profitNeeded ?? "?"} more net profit needed${p2.monthsNow !== null ? `, ~${p2.monthsNow.toFixed(1)} months at the last-30-day pace` : ""}`).join("; ") || "none"}
+Profit targets: daily ₹${data.profitTargets?.daily || 0}, weekly ₹${data.profitTargets?.weekly || 0}, monthly ₹${data.profitTargets?.monthly || 0}
+His business rules: own rate ₹${bizSettings(data).fx}/$; minimum margin ${bizSettings(data).minMargin}% and good margin ${bizSettings(data).goodMargin}% on landed cost; reshippers ${bizSettings(data).reshippers.map((r) => `${r.name} ₹${r.rate}/kg tax ${r.tax}%${r.minKg ? ` min ${r.minKg}kg` : ""}`).join(", ")}; clients pay 50% advance and the rest when the piece reaches India, resellers pay 100% advance, KicksMachine pays about 7 days after delivery to them. For an exact landed-cost / margin calculation point him to the Deal tab rather than doing long arithmetic yourself.
+When it fits, tie an answer back to what matters to him (e.g. how far a payment moves his Sri Lanka goal) — one short clause, never a lecture.
+
 === WHAT YOU ALREADY KNOW (learned from him before — treat as fact, never re-ask these) ===
 ${B.notes || "nothing yet"}
 
@@ -1503,6 +1511,7 @@ OTHER RULES:
 - "X ko diya / gave X" with NO open due for X is NOT settle_due. Unless his words or your knowledge of X make it clear, ask exactly: "Udhaar diya (wapas aayega) ya kharcha tha?"
 - "X se aaya" → if X is in OPEN SALES: sale_payment; else if in OPEN DUES: settle_due; else income (or a loan he took, only if he says so). "party" must be the name exactly as written in those lists.
 - He sold something ("becha", "sale", "X ko bag diya 12k me") → sale_order. If he does not say how much was received so far, ASK ("abhi kitna aaya?") — do not assume 0 or full. Sourcex/KicksMachine buyers are "B2B".
+- A sale amount is revenue, not profit: the app books each payment's share of the cost automatically from costPrice. So for a sale you need the landed cost too — ask for it if he has not said it. Never log the same cost again as a separate expense.
 - If one message contains several separate transactions, handle only the first and say in nextQuestion that the rest should be sent one by one after this.
 - A question (kitna baaki, kiska paisa aana hai, is mahine ka profit, kaun late hai, kitna kharcha hua) → intent "question": answer in "answer" with exact figures from the data above, short, in his Hinglish. If the data does not contain it, say so plainly. Never log anything for a question.
 - One short question at a time, in his own casual Hinglish. Never re-ask something already answered or already known.
@@ -2376,6 +2385,7 @@ export default function Khata() {
       <TopBar saving={saving} xp={data.xp} streak={data.streak.count} nextCountryGoal={nextTravelGoal(data)} onOpenLockSetup={() => setLockSetupOpen(true)} onOpenAccount={() => setAccountOpen(true)} />
       <div style={S.body}>
         <ScopeBar mode={scopeMode} setMode={setScopeMode} untagged={untaggedCount} />
+        {tab === "overview" && <MyDay data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} mode={scopeMode} setTab={(t) => { if (!NAV_BY_MODE[scopeMode] || NAV_BY_MODE[scopeMode].includes(t)) setTab(t); else { setScopeMode("all"); setTab(t); } }} />}
         {tab === "overview" && <SmartFeed data={data} mode={scopeMode} setTab={(t) => { if (!NAV_BY_MODE[scopeMode] || NAV_BY_MODE[scopeMode].includes(t)) setTab(t); else { setScopeMode("all"); setTab(t); } }} setToast={setToast} />}
         {tab === "overview" && <OverviewTab data={viewData} persist={scopedPersist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
         {tab === "business" && <BusinessTab data={data} persist={persist} registerActivity={registerActivity} setToast={setToast} triggerNoteAnim={triggerNoteAnim} />}
@@ -5092,7 +5102,7 @@ function BusinessTab({ data, persist, registerActivity, setToast, triggerNoteAni
           <div key={`${e._k}${e.id}`} style={S.ledgerRow}>
             <div style={S.ledgerDate}>{fmtDateShort(e.date)}</div>
             <div style={S.ledgerMain}>
-              <div style={S.ledgerCategory}>{e._k === "in" ? e.source : e.category}{e.lxOrder && <span style={{ ...S.fineTag, marginLeft: 6, color: T.blue, borderColor: `${T.blue}66` }}>AUTO</span>}</div>
+              <div style={S.ledgerCategory}>{e._k === "in" ? e.source : e.category}{(e.lxOrder || e.auto) && <span style={{ ...S.fineTag, marginLeft: 6, color: T.blue, borderColor: `${T.blue}66` }}>AUTO</span>}</div>
               {e.note && <div style={S.ledgerNote}>{e.note}</div>}
             </div>
             <div style={{ ...S.ledgerAmt, color: e._k === "in" ? T.green : T.orange }} className="tnum">{e._k === "in" ? "+" : "−"}{fmt(e.amount)}</div>
@@ -5198,7 +5208,7 @@ function applyDueSettlement(data, kind, entryId, amt, date, account) {
   const scope = entry.purpose === "business" ? "business" : "personal";
   const note = `${entry.party} — settlement${entry.note ? ` (${entry.note})` : ""}`;
   let next = data, ledgerId = null, ledgerKind = null;
-  if (!(kind === "receivable" && entry.fromSoldOrder)) {
+  if (!(kind === "receivable" && entry.fromSoldOrder) && !entry.noLedger) {
     const fundDelta = fundDeltaForAmount(data.funds, pay, K.sign);
     const fundBalances = swapFundDelta(data.fundBalances, null, fundDelta);
     ledgerId = nextId();
@@ -5319,10 +5329,35 @@ function createSale(data, f) {
   const sale = {
     id: Date.now(), date: f.date || todayISO(), party: String(f.party || "").trim(), channel: SALE_TYPES.includes(f.channel) ? f.channel : "Client",
     item: String(f.item || "").trim(), saleValue: Number(f.saleValue) || 0, cost: f.cost ? Number(f.cost) : null,
-    dueDate: f.dueDate || null, payments: [], note: String(f.note || "").trim(),
+    dueDate: f.dueDate || null, payments: [], note: String(f.note || "").trim(), costLogged: !!f.costLogged,
   };
   return { next: { ...data, sales: [...(data.sales || []), sale] }, sale };
 }
+// A sale amount is revenue, not profit. So each payment also brings its share of the sale's cost into
+// the books as a linked business expense ("cost of goods sold") — income − expense is then the real
+// profit everywhere (today's profit, statement, fund split). Skipped when the cost is unknown, or when
+// the sale says its cost was already entered separately (costLogged).
+function rebuildSaleCogs(data, saleId) {
+  const sale = (data.sales || []).find((s) => s.id === saleId);
+  let fundBalances = data.fundBalances;
+  data.expenses.filter((e) => e.cogsSaleId === saleId).forEach((e) => { fundBalances = swapFundDelta(fundBalances, e.fundDelta, null); });
+  const expenses = data.expenses.filter((e) => e.cogsSaleId !== saleId);
+  if (!sale || !(sale.cost > 0) || sale.costLogged || !(sale.saleValue > 0)) return { ...data, expenses, fundBalances };
+  const total = Math.round(sale.cost);
+  let cum = 0, used = 0;
+  (sale.payments || []).forEach((p) => {
+    cum += p.amount;
+    const target = cum >= sale.saleValue ? total : Math.round((total * cum) / sale.saleValue);
+    const part = target - used;
+    used = target;
+    if (part <= 0) return;
+    const fundDelta = fundDeltaForAmount(data.funds, part, -1);
+    fundBalances = swapFundDelta(fundBalances, null, fundDelta);
+    expenses.push({ id: nextId(), amount: part, category: "Sourcing/Business", note: `${sale.party}${sale.item ? ` — ${sale.item}` : ""} ka cost (sale ke saath auto)`, date: p.date, unnecessary: false, fine: 0, fundDelta, photo: null, scope: "business", cogsSaleId: saleId, auto: true });
+  });
+  return { ...data, expenses, fundBalances };
+}
+const saleProfit = (s) => (s.cost > 0 ? s.saleValue - s.cost : null);
 // A payment is real money in: it becomes a business income entry (linked by saleId) and reduces the sale's balance.
 function applySalePayment(data, saleId, amt, date, account) {
   const sale = (data.sales || []).find((s) => s.id === saleId);
@@ -5332,7 +5367,7 @@ function applySalePayment(data, saleId, amt, date, account) {
   const incomeId = nextId();
   const income = { id: incomeId, amount: amt, source: saleIncomeSource(sale), note: `${sale.party}${sale.item ? ` — ${sale.item}` : ""} (sale payment)`, date, fundDelta, scope: "business", saleId };
   const payment = { id: nextId(), date, amount: amt, incomeId };
-  const next = { ...data, income: [...data.income, income], fundBalances, sales: data.sales.map((s) => (s.id === saleId ? { ...s, payments: [...(s.payments || []), payment] } : s)) };
+  const next = rebuildSaleCogs({ ...data, income: [...data.income, income], fundBalances, sales: data.sales.map((s) => (s.id === saleId ? { ...s, payments: [...(s.payments || []), payment] } : s)) }, saleId);
   return withAccountMovement(next, account, "in", amt, `Sale — ${sale.party}`, date);
 }
 function removeSalePayment(data, saleId, paymentId) {
@@ -5341,11 +5376,11 @@ function removeSalePayment(data, saleId, paymentId) {
   if (!payment) return data;
   const income = data.income.find((e) => e.id === payment.incomeId);
   const fundBalances = income ? swapFundDelta(data.fundBalances, income.fundDelta, null) : data.fundBalances;
-  return {
+  return rebuildSaleCogs({
     ...data, fundBalances,
     income: income ? data.income.filter((e) => e.id !== income.id) : data.income,
     sales: data.sales.map((s) => (s.id === saleId ? { ...s, payments: s.payments.filter((p) => p.id !== paymentId) } : s)),
-  };
+  }, saleId);
 }
 function salesOutstanding(data, today) {
   const open = (data.sales || []).filter((s) => saleBalance(s) > 0);
@@ -5355,7 +5390,8 @@ function salesOutstanding(data, today) {
 
 function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }) {
   const today = todayISO();
-  const blank = { party: "", channel: "Client", item: "", saleValue: "", cost: "", receivedNow: "", dueDate: "", note: "" };
+  const blank = { party: "", channel: "Client", item: "", saleValue: "", cost: "", costLogged: false, receivedNow: "", dueDate: "", note: "" };
+  const [costFor, setCostFor] = useState(null); // { id, value } — adding a missing cost to a sale
   const [form, setForm] = useState(blank);
   const [showForm, setShowForm] = useState(false);
   const [typeFilter, setTypeFilter] = useState("ALL");
@@ -5444,7 +5480,7 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
     if (!form.party.trim()) { setFormErr("Kisko becha — naam daalo."); return; }
     if (!value || value <= 0) { setFormErr("Sale ka amount daalo."); return; }
     if (got > value) { setFormErr("Received amount sale value se zyada hai."); return; }
-    const { next: withSale, sale } = createSale(data, { ...form, saleValue: value, cost: parseFloat(form.cost) || null });
+    const { next: withSale, sale } = createSale(data, { ...form, saleValue: value, cost: parseFloat(form.cost) || null, costLogged: form.costLogged && parseFloat(form.cost) > 0 });
     let next = got > 0 ? applySalePayment(withSale, sale.id, got, today, "none") : withSale;
     next = registerActivity(next, 5);
     persist(next);
@@ -5477,7 +5513,7 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
     const v = edit.values;
     const value = parseFloat(v.saleValue);
     if (!v.party.trim() || !value || value <= 0) return;
-    persist({ ...data, sales: sales.map((s) => (s.id !== edit.id ? s : { ...s, party: v.party.trim(), item: (v.item || "").trim(), saleValue: value, cost: parseFloat(v.cost) || null, dueDate: v.dueDate || null, channel: v.channel, note: (v.note || "").trim() })) });
+    persist(rebuildSaleCogs({ ...data, sales: sales.map((s) => (s.id !== edit.id ? s : { ...s, party: v.party.trim(), item: (v.item || "").trim(), saleValue: value, cost: parseFloat(v.cost) || null, costLogged: v.costLogged === "logged", dueDate: v.dueDate || null, channel: v.channel, note: (v.note || "").trim() })) }, edit.id));
     setEdit(null);
   };
 
@@ -5540,7 +5576,15 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
             })}
           </div>
           <div style={{ fontSize: 10, color: T.muted, fontWeight: 600 }}>{SALE_TERM_HINT[form.channel]}</div>
-          <AmountInput placeholder="cost (optional — profit dikhane ke liye)" value={form.cost} onChange={(v) => setForm({ ...form, cost: v })} style={{ ...S.input, width: "100%" }} className="tnum" />
+          <AmountInput placeholder="landed cost (maal + reship) — profit isi se niklega" value={form.cost} onChange={(v) => setForm({ ...form, cost: v })} style={{ ...S.input, width: "100%" }} className="tnum" />
+          {parseFloat(form.cost) > 0 && parseFloat(form.saleValue) > 0 && <div style={{ fontSize: 11, fontWeight: 700, color: parseFloat(form.saleValue) - parseFloat(form.cost) >= 0 ? T.green : T.orange }} className="tnum">Profit {fmtSigned(parseFloat(form.saleValue) - parseFloat(form.cost))} · {(((parseFloat(form.saleValue) - parseFloat(form.cost)) / parseFloat(form.cost)) * 100).toFixed(1)}% on cost</div>}
+          {!(parseFloat(form.cost) > 0) && <div style={{ fontSize: 10.5, color: T.gold, fontWeight: 700, lineHeight: 1.45 }}>Cost nahi daaloge to aaya hua poora paisa profit me gin jayega (jo galat hai). Pata na ho to baad me sale par "COST DAALO" se daal dena.</div>}
+          {parseFloat(form.cost) > 0 && (
+            <label style={S.checkboxRow}>
+              <input type="checkbox" checked={form.costLogged} onChange={(e) => setForm({ ...form, costLogged: e.target.checked })} />
+              YE KHARCHA MAINE PEHLE HI ALAG SE LIKH DIYA HAI (DOBARA MAT GINO)
+            </label>
+          )}
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
             <span style={{ fontSize: 10, color: T.muted, fontWeight: 700, letterSpacing: "0.04em" }}>BAAKI KAB TAK</span>
             {[7, 15, 30].map((n) => <button key={n} onClick={() => setForm({ ...form, dueDate: addDays(n) })} style={chip(form.dueDate === addDays(n), T.gold)}>{n} DIN</button>)}
@@ -5599,7 +5643,7 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }} onClick={() => setOpenId(isOpen ? null : s.id)}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 14, fontWeight: 700 }}>{s.party} <span style={{ ...S.fineTag, marginLeft: 4, color: SALE_TYPE_COLOR[s.channel] || T.muted, borderColor: `${SALE_TYPE_COLOR[s.channel] || T.muted}66` }}>{(s.channel || "").toUpperCase()}</span></div>
-                <div style={{ fontSize: 10.5, color: T.muted, marginTop: 3 }}>{s.item ? `${s.item} · ` : ""}{fmtDateShort(s.date)}{profit !== null ? ` · profit ${fmtSigned(profit)}` : ""}</div>
+                <div style={{ fontSize: 10.5, color: T.muted, marginTop: 3 }}>{s.item ? `${s.item} · ` : ""}{fmtDateShort(s.date)}{profit !== null ? <span style={{ color: profit >= 0 ? T.green : T.orange, fontWeight: 700 }}> · profit {fmtSigned(profit)} ({((profit / s.cost) * 100).toFixed(0)}%)</span> : ""}</div>
               </div>
               <div style={{ textAlign: "right", flexShrink: 0 }}>
                 <div style={{ fontSize: 15, fontWeight: 700, color: bal > 0 ? T.blue : T.green }} className="tnum">{bal > 0 ? fmt(bal) : "✓ PAID"}</div>
@@ -5609,6 +5653,19 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
             <div style={{ height: 5, borderRadius: 3, background: T.bg, overflow: "hidden" }}>
               <div style={{ width: `${pct}%`, height: "100%", background: T.green, borderRadius: 3 }} />
             </div>
+            {!(s.cost > 0) && !s.costLogged && (
+              costFor && costFor.id === s.id ? (
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <AmountInput autoFocus placeholder="landed cost ₹" value={costFor.value} onChange={(v) => setCostFor({ ...costFor, value: v })} style={{ ...S.input, flex: 1 }} className="tnum" />
+                  <button style={{ ...S.submitBtnGreen, padding: "9px 14px" }} className="npop" onClick={() => { const c = parseFloat(costFor.value); if (!c || c <= 0) return; persist(rebuildSaleCogs({ ...data, sales: sales.map((x) => (x.id === s.id ? { ...x, cost: c } : x)) }, s.id)); setCostFor(null); }}>SAVE</button>
+                  <button style={S.correctionLink} onClick={() => setCostFor(null)}>CANCEL</button>
+                </div>
+              ) : (
+                <button onClick={() => setCostFor({ id: s.id, value: "" })} style={{ textAlign: "left", background: `${T.gold}14`, border: `1px solid ${T.gold}55`, borderRadius: T.radiusSm, padding: "8px 10px", fontSize: 10.5, fontWeight: 700, color: T.gold, lineHeight: 1.4 }}>
+                  ⚠ COST NAHI DAALA — {got > 0 ? `aaya hua ${fmt(got)} poora profit me gin raha hai. ` : "profit nahi nikal sakta. "}COST DAALO →
+                </button>
+              )
+            )}
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, fontWeight: 700 }}>
               <span style={{ color: T.muted }} className="tnum">{fmt(got)} AAYA / {fmt(s.saleValue)}</span>
               <span style={{ color: tag.color }}>{tag.text}{s.dueDate && bal > 0 ? ` · ${fmtDateShort(s.dueDate)}` : ""}</span>
@@ -5631,7 +5688,7 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
                 {bal > 0 && <button style={{ ...S.submitBtnGreen, flex: 1, padding: "10px" }} className="npop" onClick={() => setRecv({ id: s.id, amount: String(bal), account: "none" })}>PAISA AAYA</button>}
                 <button style={S.correctionLink} onClick={() => setOpenId(isOpen ? null : s.id)}>{isOpen ? "HIDE" : `LOG · ${(s.payments || []).length}`}</button>
                 {bal > 0 && <button style={S.correctionLink} title="reminder message copy karo" onClick={async () => { const ok = await copyToClipboard(saleReminderText(s)); setToast(ok ? "REMINDER COPIED — WHATSAPP ME PASTE KARO" : "COPY NAHI HUA"); setTimeout(() => setToast(null), 1800); }}>REMINDER</button>}
-                <button style={S.editBtn} onClick={() => setEdit({ id: s.id, values: { party: s.party, item: s.item || "", saleValue: String(s.saleValue), cost: s.cost ? String(s.cost) : "", dueDate: s.dueDate || "", channel: s.channel, note: s.note || "" } })} title="edit"><Pencil size={12} color={T.muted} /></button>
+                <button style={S.editBtn} onClick={() => setEdit({ id: s.id, values: { party: s.party, item: s.item || "", saleValue: String(s.saleValue), cost: s.cost ? String(s.cost) : "", dueDate: s.dueDate || "", channel: s.channel, note: s.note || "", costLogged: s.costLogged ? "logged" : "auto" } })} title="edit"><Pencil size={12} color={T.muted} /></button>
                 <button style={S.deleteBtn} onClick={() => delSale(s)} title="delete">{confirmDel === s.id ? <span style={{ fontSize: 9, color: T.orange, fontWeight: 700 }}>SURE?</span> : <Trash2 size={13} color={T.muted} />}</button>
               </div>
             )}
@@ -5719,7 +5776,8 @@ function SalesTab({ data, persist, registerActivity, setToast, triggerNoteAnim }
             { key: "channel", type: "select", label: "type", options: SALE_TYPES },
             { key: "item", type: "text", label: "item" },
             { key: "saleValue", type: "amount", label: "sale amount" },
-            { key: "cost", type: "amount", label: "cost (optional)" },
+            { key: "cost", type: "amount", label: "landed cost" },
+            { key: "costLogged", type: "select", label: "cost ka hisaab", options: [{ value: "auto", label: "App khud ginega (sale ke saath)" }, { value: "logged", label: "Maine alag se kharcha likh diya hai" }] },
             { key: "dueDate", type: "date", label: "due date" },
             { key: "note", type: "text", label: "note (optional)" },
           ]}
@@ -5847,13 +5905,8 @@ function DealTab({ data, persist, registerActivity, setToast, triggerNoteAnim })
     const { next: withSale, sale } = createSale(data, { party: b.party, channel: b.channel, item: f.item, saleValue: d.sell, cost: Math.round(d.landed), dueDate: due, note: `landed ${fmt(d.landed)} · ${d.r.name}` });
     const got = Math.round((d.sell * b.receivedPct) / 100);
     let next = got > 0 ? applySalePayment(withSale, sale.id, got, today, "none") : withSale;
-    if (b.logCost && d.itemInr > 0) {
-      const amt = Math.round(d.itemInr);
-      const fundDelta = fundDeltaForAmount(next.funds, amt, -1);
-      next = { ...next, fundBalances: swapFundDelta(next.fundBalances, null, fundDelta), expenses: [...next.expenses, { id: nextId(), amount: amt, category: "Sourcing/Business", note: `${f.item || "item"} — $${d.usd.toFixed(2)} @ ₹${d.fx}`, date: today, unnecessary: false, fine: 0, fundDelta, photo: null, scope: "business", saleId: sale.id }] };
-    }
     if (b.logReship && d.reship > 0) {
-      next = { ...next, payables: [...next.payables, { id: nextId(), party: d.r.name.replace(/\s*\(.*\)$/, ""), amount: Math.round(d.reship), purpose: "business", dueDate: null, note: `reship ${d.billKg} kg — ${f.item || "item"}`, status: "pending", isCOD: false, minAmount: null }] };
+      next = { ...next, payables: [...next.payables, { id: nextId(), party: d.r.name.replace(/\s*\(.*\)$/, ""), amount: Math.round(d.reship), purpose: "business", dueDate: null, note: `reship ${d.billKg} kg — ${f.item || "item"} (sale ke cost me gina hua)`, status: "pending", isCOD: false, minAmount: null, noLedger: true }] };
     }
     next = registerActivity(next, 5);
     persist(next);
@@ -6033,8 +6086,8 @@ function DealTab({ data, persist, registerActivity, setToast, triggerNoteAnim })
                   </div>
                 </div>
               )}
-              <label style={S.checkboxRow}><input type="checkbox" checked={saveBox.logCost} onChange={(e) => setSaveBox({ ...saveBox, logCost: e.target.checked })} />ITEM KA {fmt(Math.round(d.itemInr))} KHARCHE ME BHI DAALO (CARD SE DE DIYA)</label>
-              {d.reship > 0 && <label style={S.checkboxRow}><input type="checkbox" checked={saveBox.logReship} onChange={(e) => setSaveBox({ ...saveBox, logReship: e.target.checked })} />{d.r.name.toUpperCase()} KA {fmt(Math.round(d.reship))} RESHIP "DENA HAI" ME DAALO</label>}
+              <div style={{ fontSize: 10.5, color: T.muted, fontWeight: 600, lineHeight: 1.5 }}>Landed cost {fmt(Math.round(d.landed))} is sale me jud jayega — jaise-jaise paisa aayega, uska cost apne aap ginega aur profit sahi dikhega. Alag se kharcha mat likhna.</div>
+              {d.reship > 0 && <label style={S.checkboxRow}><input type="checkbox" checked={saveBox.logReship} onChange={(e) => setSaveBox({ ...saveBox, logReship: e.target.checked })} />{d.r.name.toUpperCase()} KA {fmt(Math.round(d.reship))} RESHIP "DENA HAI" ME YAAD KE LIYE DAALO</label>}
               <button style={{ ...S.submitBtnGreen, opacity: saveBox.party.trim() ? 1 : 0.45 }} className="npop" onClick={saveDeal}>SAVE</button>
             </div>
           </div>
@@ -6290,6 +6343,13 @@ function buildInsights(data, today) {
   const parties = Object.entries(byParty).map(([p2, arr]) => [p2, arr.reduce((a, x) => a + saleBalance(x), 0)]).sort((a, b) => b[1] - a[1]);
   if (parties.length >= 2 && so.total > 0 && parties[0][1] / so.total >= 0.6) add({ id: "concentration", scope: "business", level: 1, tab: "sales", text: `Lene wale paise ka ${Math.round((parties[0][1] / so.total) * 100)}% sirf ${parties[0][0]} par atka hai`, sub: `${fmt(parties[0][1])} of ${fmt(so.total)} — ek hi party par zyada nirbhar` });
 
+  // sale money with no cost attached is being counted as pure profit
+  const noCost = (data.sales || []).filter((x) => !(x.cost > 0) && !x.costLogged);
+  if (noCost.length) {
+    const got = noCost.reduce((a, x) => a + saleReceived(x), 0);
+    add({ id: "sale-nocost", scope: "business", level: got > 0 ? 3 : 2, tab: "sales", text: `${noCost.length} sale ka cost nahi daala${got > 0 ? ` — ${fmt(got)} poora profit me gin raha hai` : ""}`, sub: `${[...new Set(noCost.map((x) => x.party))].slice(0, 3).join(", ")} — Sales me "COST DAALO" dabao, tabhi asli profit dikhega` });
+  }
+
   // --- dues ---
   (data.receivables || []).filter((r) => r.status === "pending" && r.dueDate && r.dueDate < today).forEach((r) => add({ id: `rdue-${r.id}`, scope: dueScope(r), level: 3, tab: "dues", text: `${r.party} se ${fmt(r.amount)} lena tha — ${days(r.dueDate, today)} din late`, sub: r.note || "Dues me dekho" }));
   (data.payables || []).filter((r) => r.status === "pending").forEach((r) => {
@@ -6344,7 +6404,7 @@ function buildInsights(data, today) {
   if (untagged > 0) add({ id: "untagged", scope: "all", level: 1, tab: "business", text: `${untagged} entr${untagged === 1 ? "y" : "ies"} par business/personal tag nahi hai`, sub: "Biz tab me ek tap se tag karo — tabhi profit sahi aayega" });
   // exact same entry twice on one day is usually a double entry
   const seen = {};
-  [...data.income.map((e) => ({ ...e, _l: e.source, _k: "income" })), ...data.expenses.map((e) => ({ ...e, _l: e.category, _k: "expense" }))].filter((e) => days(e.date, today) <= 7 && !e.saleId && !e.dueId)
+  [...data.income.map((e) => ({ ...e, _l: e.source, _k: "income" })), ...data.expenses.map((e) => ({ ...e, _l: e.category, _k: "expense" }))].filter((e) => days(e.date, today) <= 7 && !e.saleId && !e.dueId && !e.cogsSaleId)
     .forEach((e) => { const k = `${e._k}|${e.date}|${e.amount}|${e._l}`; seen[k] = (seen[k] || 0) + 1; });
   Object.entries(seen).filter(([, n]) => n > 1).slice(0, 2).forEach(([k]) => { const [kind, date, amt, label] = k.split("|"); add({ id: `dup-${k}`, scope: "all", level: 1, tab: kind === "income" ? "income" : "expense", text: `${fmtDateShort(date)} ko ${fmt(Number(amt))} ${label} do baar likha hai`, sub: "galti se double ho to ek hata do" }); });
 
@@ -6392,6 +6452,219 @@ function SmartFeed({ data, mode, setTab, setToast }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- My day: a brief, goals and shortcuts built from HIS goals, rules and habits ---------------- */
+
+const OWNER_NAME = "Jeet";
+const dAgoISO = (today, n) => { const x = new Date(today + "T00:00:00"); x.setDate(x.getDate() - n); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
+
+// What each goal still needs, in terms he can act on: a fund only grows by its % of what he nets,
+// so "₹X left in the fund" really means "₹X ÷ % more profit".
+function goalPlans(data, today) {
+  const from = dAgoISO(today, 29);
+  const net30 = data.income.filter((e) => e.date >= from && e.date <= today).reduce((a, e) => a + e.amount, 0) - data.expenses.filter((e) => e.date >= from && e.date <= today).reduce((a, e) => a + e.amount, 0);
+  const monthlyTarget = data.profitTargets?.monthly || 0;
+  return (data.goals || []).map((g) => {
+    const fund = (data.funds || []).find((f) => f.id === g.fundId);
+    const pct = fund ? fund.pct : 0;
+    const bal = (data.fundBalances || {})[g.fundId] || 0;
+    const left = Math.max(0, (g.target || 0) - bal);
+    const profitNeeded = pct > 0 ? Math.ceil(left / (pct / 100)) : null;
+    const perMonthNow = pct > 0 ? (net30 * pct) / 100 : 0;
+    const monthsNow = left > 0 && perMonthNow > 0 ? left / perMonthNow : null;
+    const monthsAtTarget = left > 0 && pct > 0 && monthlyTarget > 0 ? left / ((monthlyTarget * pct) / 100) : null;
+    const monthsToDate = g.targetDate && g.targetDate > today ? Math.max(0.25, dayDiff(today, g.targetDate) / 30) : null;
+    return { g, fund, pct, bal, left, profitNeeded, net30, monthsNow, monthsAtTarget, needPerMonth: monthsToDate && pct > 0 ? Math.ceil(left / (pct / 100) / monthsToDate) : null, done: left <= 0 };
+  });
+}
+
+// entries he logs again and again → one-tap shortcuts
+function learnedShortcuts(data) {
+  const m = {};
+  const feed = (arr, kind) => arr.slice(-150).forEach((e) => {
+    if (e.saleId || e.dueId || e.lxOrder || e.cashbackId || e.cogsSaleId || e.unnecessary) return;
+    const label = kind === "in" ? e.source : e.category;
+    const scope = entryClass(e, kind === "in" ? "income" : "expense");
+    if (!label || scope === "unsorted") return;
+    const k = `${kind}|${label}|${e.amount}|${scope}`;
+    m[k] = m[k] || { kind, label, amount: e.amount, scope, n: 0, last: e.date };
+    m[k].n += 1; if (e.date > m[k].last) m[k].last = e.date;
+  });
+  feed(data.income, "in"); feed(data.expenses, "out");
+  return Object.values(m).filter((x) => x.n >= 2).sort((a, b) => b.n - a.n || b.last.localeCompare(a.last)).slice(0, 6);
+}
+
+// what his own history says about how he spends and earns (only once there is enough of it)
+function myPatterns(data, today) {
+  const from = dAgoISO(today, 59);
+  const dow = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const out = [];
+  const personal = data.expenses.filter((e) => e.date >= from && entryClass(e, "expense") === "personal");
+  if (personal.length >= 8) {
+    const byDay = {}; personal.forEach((e) => { const d = new Date(e.date + "T00:00:00").getDay(); byDay[d] = (byDay[d] || 0) + e.amount; });
+    const top = Object.entries(byDay).sort((a, b) => b[1] - a[1])[0];
+    const total = personal.reduce((a, e) => a + e.amount, 0);
+    if (top && total > 0 && top[1] / total >= 0.25) out.push(`Tum ${dow[top[0]]} ko sabse zyada kharch karte ho — personal kharche ka ${Math.round((top[1] / total) * 100)}%`);
+    const byCat = {}; personal.forEach((e) => { byCat[e.category] = (byCat[e.category] || 0) + e.amount; });
+    const c = Object.entries(byCat).sort((a, b) => b[1] - a[1])[0];
+    if (c) out.push(`Sabse bada personal kharcha: ${c[0]} — ${fmt(c[1])} (60 din me)`);
+    const spanDays = Math.max(1, dayDiff(personal.reduce((a, e) => (e.date < a ? e.date : a), today), today) + 1);
+    out.push(`Roz ka average personal kharcha: ${fmt(Math.round(total / spanDays))}`);
+  }
+  const waste = data.expenses.filter((e) => e.date >= from && e.unnecessary);
+  if (waste.length >= 3) out.push(`60 din me ${waste.length} baar waste — ${fmt(waste.reduce((a, e) => a + e.amount, 0))} (fine milake)`);
+  const biz = data.income.filter((e) => e.date >= from && entryClass(e, "income") === "business");
+  if (biz.length >= 6) {
+    const bySrc = {}; biz.forEach((e) => { bySrc[e.source] = (bySrc[e.source] || 0) + e.amount; });
+    const sTop = Object.entries(bySrc).sort((a, b) => b[1] - a[1])[0];
+    const tot = biz.reduce((a, e) => a + e.amount, 0);
+    if (sTop) out.push(`Business ka ${Math.round((sTop[1] / tot) * 100)}% paisa ${sTop[0]} se aata hai`);
+  }
+  return out;
+}
+
+function MyDay({ data, persist, registerActivity, setToast, triggerNoteAnim, mode, setTab }) {
+  const today = todayISO();
+  const now = new Date();
+  const hr = now.getHours() + now.getMinutes() / 60;
+  const [armed, setArmed] = useState(null);
+  const [showPatterns, setShowPatterns] = useState(false);
+  const plans = useMemo(() => goalPlans(data, today), [data, today]);
+  const shortcuts = useMemo(() => learnedShortcuts(data).filter((x) => mode === "all" || x.scope === mode), [data, mode]);
+  const patterns = useMemo(() => myPatterns(data, today), [data, today]);
+
+  // --- today's brief, in his terms ---
+  const sumDay = (arr, kind, cls) => arr.filter((e) => e.date === today && entryClass(e, kind) === cls).reduce((a, e) => a + e.amount, 0);
+  const bizToday = sumDay(data.income, "income", "business") - sumDay(data.expenses, "expense", "business");
+  const dailyTarget = data.profitTargets?.daily || 0;
+  const lines = [];
+  if (mode !== "personal" && dailyTarget > 0) lines.push(bizToday >= dailyTarget
+    ? { c: T.green, t: `Aaj ka target poora — ${fmt(bizToday)} bana` }
+    : { c: T.ivory, t: `Aaj business me ${fmtSigned(bizToday)} — ${fmt(dailyTarget)} ke target ke liye ${fmt(dailyTarget - bizToday)} aur` });
+  if (mode !== "personal") {
+    const so = salesOutstanding(data, today);
+    if (so.overdue.length) lines.push({ c: T.orange, t: `${fmt(so.overdueTotal)} late pada hai (${so.overdue.length} entr${so.overdue.length === 1 ? "y" : "ies"}) — aaj reminder bhejo`, tab: "sales" });
+    if (hr >= 19.5 && hr < 22) lines.push({ c: T.gold, t: "Abhi tumhari sourcing window hai (8–10 PM) — outlets abhi reachable hain" });
+  }
+  if (mode !== "business") {
+    // what he can still spend today without going over last month's personal spending
+    const mk = monthKey(today), prev = shiftMonthKey(mk, -1);
+    const pSum = (key) => data.expenses.filter((e) => monthKey(e.date) === key && entryClass(e, "expense") === "personal").reduce((a, e) => a + e.amount, 0);
+    const lastMonth = pSum(prev), thisMonth = pSum(mk);
+    const [yy, mm] = mk.split("-").map(Number);
+    const daysLeft = new Date(yy, mm, 0).getDate() - Number(today.slice(8, 10)) + 1;
+    if (lastMonth > 0) {
+      const room = lastMonth - thisMonth;
+      lines.push(room > 0
+        ? { c: T.ivory, t: `Personal: aaj ${fmt(Math.floor(room / daysLeft))} tak kharch karo to pichhle mahine (${fmt(lastMonth)}) se upar nahi jaoge` }
+        : { c: T.orange, t: `Personal kharcha pichhle mahine (${fmt(lastMonth)}) se ${fmt(-room)} upar ja chuka hai` });
+    }
+    const spentToday = sumDay(data.expenses, "expense", "personal");
+    if (spentToday > 0) lines.push({ c: T.muted, t: `Aaj personal me ${fmt(spentToday)} gaya` });
+  }
+  const loggedToday = data.income.some((e) => e.date === today) || data.expenses.some((e) => e.date === today);
+  if (!loggedToday && hr >= 18) lines.push({ c: T.gold, t: "Aaj abhi tak kuch log nahi kiya — din ka hisaab daal do, streak bani rahegi" });
+
+  const greet = hr < 12 ? "Good morning" : hr < 17 ? "Good afternoon" : "Good evening";
+
+  const tapShortcut = (x) => {
+    const key = `${x.kind}|${x.label}|${x.amount}|${x.scope}`;
+    if (armed !== key) { setArmed(key); setTimeout(() => setArmed((a) => (a === key ? null : a)), 3500); return; }
+    const isIn = x.kind === "in";
+    const fundDelta = fundDeltaForAmount(data.funds, x.amount, isIn ? 1 : -1);
+    const fundBalances = swapFundDelta(data.fundBalances, null, fundDelta);
+    let next = isIn
+      ? { ...data, fundBalances, income: [...data.income, { id: nextId(), amount: x.amount, source: x.label, note: "", date: today, fundDelta, scope: x.scope }] }
+      : { ...data, fundBalances, expenses: [...data.expenses, { id: nextId(), amount: x.amount, category: x.label, note: "", date: today, unnecessary: false, fine: 0, fundDelta, photo: null, scope: x.scope }] };
+    next = registerActivity(next, isIn ? 5 : 3);
+    persist(next);
+    triggerNoteAnim(x.amount, isIn ? "in" : "out");
+    setArmed(null);
+    setToast(`${isIn ? "+" : "−"}${fmt(x.amount)} ${x.label.toUpperCase()} SAVED`); setTimeout(() => setToast(null), 1300);
+  };
+
+  const showGoals = mode !== "business" ? plans : plans.filter((p2) => p2.g.priority);
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ ...S.formCard, marginTop: 0, gap: 8 }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>{greet}, {OWNER_NAME}</div>
+        {lines.length === 0 && <div style={{ fontSize: 11.5, color: T.muted, fontWeight: 600 }}>Sab theek chal raha hai — aaj ke liye kuch pending nahi.</div>}
+        {lines.map((l, i) => (
+          <div key={i} onClick={() => l.tab && setTab(l.tab)} style={{ fontSize: 12, fontWeight: 600, color: l.c, lineHeight: 1.45, display: "flex", gap: 8 }}>
+            <span style={{ color: l.c === T.muted ? T.muted : l.c }}>•</span><span>{l.t}</span>
+          </div>
+        ))}
+      </div>
+
+      {shortcuts.length > 0 && (
+        <>
+          <SectionLabel text="TUMHARI ROZ KI ENTRIES — EK TAP" />
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
+            {shortcuts.map((x) => {
+              const key = `${x.kind}|${x.label}|${x.amount}|${x.scope}`;
+              const on = armed === key;
+              const c = x.kind === "in" ? T.green : T.orange;
+              return (
+                <button key={key} onClick={() => tapShortcut(x)} className="tnum" style={{ background: on ? c : T.surface, color: on ? T.bg : T.ivory, border: `1px solid ${on ? c : T.line}`, borderRadius: T.radiusPill, padding: "8px 12px", fontSize: 11.5, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif" }}>
+                  {on ? `PAKKA? ${x.kind === "in" ? "+" : "−"}${fmt(x.amount)} SAVE` : `${x.kind === "in" ? "+" : "−"}${fmt(x.amount)} ${BIZ_CHIP_LABEL[x.label] || x.label}`}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {showGoals.length > 0 && (
+        <>
+          <SectionLabel text="TUMHARE GOALS — KITNA AUR, KAB TAK" />
+          {showGoals.map((p2) => {
+            const prog = p2.g.target > 0 ? Math.max(0, Math.min(100, (p2.bal / p2.g.target) * 100)) : 0;
+            const col = (p2.fund && p2.fund.color) || T.blue;
+            const mo = (n) => (n < 1 ? `${Math.max(1, Math.round(n * 30))} din` : n < 24 ? `${n.toFixed(1)} mahine` : `${(n / 12).toFixed(1)} saal`);
+            return (
+              <div key={p2.g.id} style={{ ...S.formCard, marginTop: 8, gap: 7 }} onClick={() => setTab("goals")}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>{p2.g.name}</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: p2.done ? T.green : T.ivory }} className="tnum">{p2.done ? "✓ PAISA POORA" : `${fmt(p2.left)} aur`}</div>
+                </div>
+                <div style={{ height: 6, borderRadius: 3, background: T.bg, overflow: "hidden" }}><div style={{ width: `${prog}%`, height: "100%", background: col, borderRadius: 3 }} /></div>
+                <div style={{ fontSize: 10.5, color: T.muted, fontWeight: 600, lineHeight: 1.55 }} className="tnum">
+                  {p2.fund ? `${p2.fund.name} me ${fmt(p2.bal)} of ${fmt(p2.g.target)}` : "is goal ka fund set nahi hai"}
+                  {p2.bal < 0 ? " · fund minus me hai kyunki kharcha pehle hua aur paisa baad me aayega" : ""}
+                </div>
+                {!p2.done && p2.pct > 0 && (
+                  <div style={{ fontSize: 11.5, fontWeight: 600, lineHeight: 1.55 }} className="tnum">
+                    <div>Iske liye <span style={{ color: col }}>{fmt(p2.profitNeeded)}</span> aur net kamaana hoga <span style={{ color: T.muted }}>(har ₹1,000 me se ₹{Math.round(p2.pct * 10)} is fund me jaata hai)</span></div>
+                    {p2.needPerMonth !== null && <div style={{ color: T.gold }}>{fmtDate(p2.g.targetDate)} tak ke liye: {fmt(p2.needPerMonth)} / mahina net chahiye</div>}
+                    {p2.monthsNow !== null
+                      ? <div>Pichhle 30 din ki raftaar ({fmtSigned(p2.net30)} net) se: <span style={{ color: col }}>~{mo(p2.monthsNow)}</span></div>
+                      : <div style={{ color: T.muted }}>Pichhle 30 din ka net {fmtSigned(p2.net30)} hai — is raftaar se abhi nahi badhega</div>}
+                    {p2.monthsAtTarget !== null && <div style={{ color: T.muted }}>Agar mahine ka target ({fmt(data.profitTargets.monthly)}) lagta rahe: ~{mo(p2.monthsAtTarget)}</div>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {patterns.length > 0 && (
+        <>
+          <div style={{ ...S.sectionHeadRow, marginTop: 14 }}>
+            <SectionLabel text="TUMHARA PATTERN" noMargin />
+            <button style={S.correctionLink} onClick={() => setShowPatterns((v) => !v)}>{showPatterns ? "HIDE" : "DEKHO"}</button>
+          </div>
+          {showPatterns && (
+            <div style={S.formCard}>
+              {patterns.map((t, i) => <div key={i} style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.45 }}>• {t}</div>)}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
